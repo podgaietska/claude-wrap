@@ -14,6 +14,21 @@ _STRATEGIES: dict[str, type[ComplexityClassifier]] = {
 
 @dataclass
 class RouteDecision:
+    """The routing outcome for one incoming `/v1/messages` request.
+
+    Attributes:
+        tier: The chosen tier name ("small" or "large"), or "unchanged"
+            if this was a tool-result continuation that wasn't reclassified.
+        model: The model ID to send upstream -- either a tier's configured
+            model, or the client's originally requested model when
+            `is_tool_continuation` is True.
+        is_tool_continuation: True if the newest turn was a tool-result
+            continuation rather than a fresh human question, meaning no
+            classification was performed.
+        complexity: The `ComplexityResult` that produced `tier`, or None
+            when `is_tool_continuation` is True.
+    """
+
     tier: str
     model: str
     is_tool_continuation: bool
@@ -21,9 +36,21 @@ class RouteDecision:
 
 
 def extract_newest_human_text(messages: list[dict]) -> str | None:
-    """Returns the text of the latest turn if it's fresh human-authored
-    text, or None if it's a tool-result continuation (or there's no text
-    to classify)."""
+    """Extracts the newest turn's text if it's a fresh human question.
+
+    Claude Code resends the full conversation on every request, so the
+    last message in `messages` is the newest turn. A tool-result turn
+    (Claude Code returning a tool's output) is a continuation, not a
+    fresh question, and should not be reclassified.
+
+    Args:
+        messages: The Messages API `messages` array, oldest first.
+
+    Returns:
+        The newest turn's text, or None if there is no fresh human text
+        to classify (empty history, non-user last turn, or a
+        tool-result-only turn).
+    """
     if not messages:
         return None
     latest = messages[-1]
@@ -51,12 +78,35 @@ def extract_newest_human_text(messages: list[dict]) -> str | None:
 
 
 class Router:
+    """Ties complexity classification and the context-window safety check
+    together to decide which model a turn should be sent to."""
+
     def __init__(self, config: Config):
+        """Builds a router from the given config.
+
+        Args:
+            config: The loaded application config, providing the tier
+                definitions and the configured routing strategy.
+        """
         self.config = config
         strategy_cls = _STRATEGIES.get(config.routing.strategy, HeuristicClassifier)
         self.classifier = strategy_cls()
 
     def route(self, messages: list[dict], requested_model: str) -> RouteDecision:
+        """Decides which model a request's newest turn should be routed to.
+
+        Escalates a "small" classification to "large" if the conversation
+        is too big for the small tier's context window.
+
+        Args:
+            messages: The Messages API `messages` array from the incoming
+                request.
+            requested_model: The model ID the client originally requested,
+                used as-is for tool-result continuations.
+
+        Returns:
+            The `RouteDecision` describing which model to forward to.
+        """
         newest_text = extract_newest_human_text(messages)
         if newest_text is None:
             # Not a fresh question -- pass through whatever model was

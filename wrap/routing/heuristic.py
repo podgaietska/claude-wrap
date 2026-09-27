@@ -25,6 +25,18 @@ class HeuristicClassifier(ComplexityClassifier):
     """Zero-cost, deterministic complexity scorer. No extra model call."""
 
     def classify(self, text: str, threshold: float) -> ComplexityResult:
+        """Scores text by combining length, code/math signals, and language cues.
+
+        Args:
+            text: The turn's text to score. Leading/trailing whitespace is
+                stripped; an empty turn always scores 0.0 ("small").
+            threshold: Score at or above which the result's tier is
+                "large" rather than "small".
+
+        Returns:
+            A `ComplexityResult` with the score, chosen tier, and a
+            comma-separated summary of which signals fired.
+        """
         text = text.strip()
         if not text:
             return ComplexityResult(score=0.0, tier="small", reasoning="empty turn")
@@ -66,4 +78,14 @@ class HeuristicClassifier(ComplexityClassifier):
 
 
 def _clamp(value: float, low: float, high: float) -> float:
+    """Restricts `value` to the closed interval [low, high].
+
+    Args:
+        value: The number to clamp.
+        low: Minimum allowed value.
+        high: Maximum allowed value.
+
+    Returns:
+        `value` if it's already within range, otherwise the nearest bound.
+    """
     return max(low, min(high, value))

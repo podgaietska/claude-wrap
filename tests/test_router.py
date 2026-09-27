@@ -5,6 +5,7 @@ from wrap.routing.router import Router, extract_newest_human_text
 
 
 def make_config() -> Config:
+    """Builds a minimal `Config` fixture for router/heuristic tests."""
     return Config(
         tiers={
             "small": TierConfig(model="small-model", context_window=1000),

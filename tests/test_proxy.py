@@ -9,6 +9,8 @@ from wrap.proxy.server import create_app
 
 
 def make_config() -> Config:
+    """Builds a minimal `Config` fixture pointing at the real Anthropic
+    upstream URL (mocked per-test via `respx`)."""
     return Config(
         tiers={
             "small": TierConfig(model="small-model", context_window=200000),

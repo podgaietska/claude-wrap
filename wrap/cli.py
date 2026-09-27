@@ -17,6 +17,20 @@ console = Console(stderr=True)
 
 
 def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
+    """Polls until a TCP port accepts connections or a timeout is reached.
+
+    Used to wait for the proxy subprocess to finish starting up before
+    launching Claude Code against it.
+
+    Args:
+        host: Host to connect to.
+        port: Port to connect to.
+        timeout: Maximum time to wait, in seconds. Defaults to 10.0.
+
+    Returns:
+        True as soon as a connection succeeds, False if `timeout` elapses
+        first.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -29,7 +43,17 @@ def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
 
 @app.command()
 def claude():
-    """Launch Claude Code with routing-aware proxying turned on."""
+    """Launch Claude Code with routing-aware proxying turned on.
+
+    Runs the real `claude` CLI as a child process with stdio inherited,
+    so the user gets a normal, fully interactive session; the proxy
+    subprocess is always torn down afterward.
+
+    Raises:
+        typer.Exit: With code 1 if `claude` isn't on PATH or the proxy
+            doesn't come up in time; otherwise with `claude`'s exit code
+            once the session ends.
+    """
     if shutil.which("claude") is None:
         console.print("[red]Could not find `claude` on PATH. Install Claude Code first.[/red]")
         raise typer.Exit(1)
