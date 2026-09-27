@@ -1,0 +1,24 @@
+tiers:
+  small:
+    model: claude-haiku-4-5-20251001
+    context_window: 200000
+  large:
+    model: claude-sonnet-5
+    context_window: 1000000
+
+routing:
+  strategy: heuristic
+  complexity_threshold: 0.5
+
+cache:
+  enabled: false # Phase C
+  similarity_threshold: 0.92
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+
+proxy:
+  port: 8787
+  upstream_base_url: https://api.anthropic.com
+
+telemetry:
+  db_path: data/wrap.db
+  pricing_file: config/pricing.yaml
