@@ -13,7 +13,7 @@ def make_config() -> Config:
         },
         routing=RoutingConfig(strategy="heuristic", complexity_threshold=0.5),
         cache=CacheConfig(enabled=False, similarity_threshold=0.92, embedding_model="x"),
-        proxy=ProxyConfig(port=8787, upstream_base_url="https://api.anthropic.com"),
+        proxy=ProxyConfig(port=8787, upstream_base_url="https://api.anthropic.com", log_path="data/proxy.log"),
         telemetry=TelemetryConfig(db_path="data/wrap.db", pricing_file="config/pricing.yaml"),
     )
 

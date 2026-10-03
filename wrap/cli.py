@@ -10,7 +10,7 @@ import time
 import typer
 from rich.console import Console
 
-from wrap.config import load_config
+from wrap.config import REPO_ROOT, load_config
 
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
@@ -46,7 +46,9 @@ def claude():
     """Launch Claude Code with routing-aware proxying turned on.
 
     Runs the real `claude` CLI as a child process with stdio inherited,
-    so the user gets a normal, fully interactive session; the proxy
+    so the user gets a normal, fully interactive session. The proxy's own
+    log output is written to a file (see `wrap logs`) rather than this
+    terminal, so it doesn't interleave with the Claude Code UI; the proxy
     subprocess is always torn down afterward.
 
     Raises:
@@ -60,6 +62,10 @@ def claude():
 
     config = load_config()
     host = "127.0.0.1"
+
+    log_path = REPO_ROOT / config.proxy.log_path
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "w")
 
     proxy_proc = subprocess.Popen(
         [
@@ -75,6 +81,8 @@ def claude():
             "--log-level",
             "warning",
         ],
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
     )
 
     try:
@@ -84,7 +92,8 @@ def claude():
 
         console.print(
             f"[green]wrap[/green] proxy up on {host}:{config.proxy.port} -- "
-            f"tiers: small={config.tiers['small'].model}, large={config.tiers['large'].model}"
+            f"tiers: small={config.tiers['small'].model}, large={config.tiers['large'].model}\n"
+            f"[dim]Logs: {log_path} -- run `wrap logs` in another terminal to follow them live.[/dim]"
         )
 
         env = os.environ.copy()
@@ -98,6 +107,23 @@ def claude():
             proxy_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proxy_proc.kill()
+        log_file.close()
+
+
+@app.command()
+def logs():
+    """Follow the proxy's log from the current (or most recent) `wrap claude` session."""
+    config = load_config()
+    log_path = REPO_ROOT / config.proxy.log_path
+
+    if not log_path.exists():
+        console.print(f"[yellow]No log file yet at {log_path} -- run `wrap claude` first.[/yellow]")
+        raise typer.Exit(1)
+
+    try:
+        subprocess.run(["tail", "-n", "50", "-f", str(log_path)])
+    except KeyboardInterrupt:
+        pass
 
 
 @app.command()

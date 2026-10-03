@@ -18,6 +18,7 @@ cache:
 proxy:
   port: 8787
   upstream_base_url: https://api.anthropic.com
+  log_path: data/proxy.log
 
 telemetry:
   db_path: data/wrap.db

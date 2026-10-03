@@ -63,10 +63,15 @@ class ProxyConfig:
         port: Port the proxy listens on.
         upstream_base_url: Base URL of the real Anthropic API the proxy
             forwards requests to.
+        log_path: Path (relative to the repo root) the proxy's log output
+            is written to, so it doesn't interleave with the wrapped
+            Claude Code session's own terminal output. Read live with
+            `wrap logs`.
     """
 
     port: int
     upstream_base_url: str
+    log_path: str
 
 
 @dataclass
