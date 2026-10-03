@@ -9,10 +9,14 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 from rich.logging import RichHandler
+from rich.markup import escape
 
 from wrap.config import Config, load_config
-from wrap.proxy.upstream import filtered_headers
+from wrap.proxy.limits import LimitRegistry, parse_max_tokens_ceiling
+from wrap.proxy.upstream import filtered_headers, upstream_request_headers
 from wrap.routing.router import Router
+
+_ERROR_LOG_CHARS = 500
 
 logger = logging.getLogger("wrap.proxy")
 if not logger.handlers:
@@ -44,6 +48,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.state.config = config
     app.state.router = router
+    app.state.limits = LimitRegistry(config.model_limits)
 
     @app.post("/v1/messages")
     async def messages(request: Request):
@@ -57,7 +62,11 @@ def create_app(config: Config | None = None) -> FastAPI:
 
 
 async def _handle_messages(request: Request, app: FastAPI) -> Response:
-    """Routes the newest turn's model, then forwards to the real Anthropic API.
+    """Routes the newest turn's model, clamps max_tokens, then forwards upstream.
+
+    If the API still rejects `max_tokens` (the configured limit is stale),
+    the real ceiling is parsed from the error, remembered for the session,
+    and the request is retried once.
 
     Args:
         request: Incoming request from the client (Claude Code).
@@ -68,6 +77,7 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     """
     config: Config = app.state.config
     router: Router = app.state.router
+    limits: LimitRegistry = app.state.limits
     client: httpx.AsyncClient = app.state.http_client
 
     raw_body = await request.body()
@@ -76,9 +86,8 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     except json.JSONDecodeError:
         return await _forward_unmodified(request, app, "v1/messages", raw_body=raw_body)
 
-    messages = body.get("messages", [])
     requested_model = body.get("model", "")
-    decision = router.route(messages, requested_model)
+    decision = router.route(body.get("messages", []), requested_model)
 
     if decision.is_tool_continuation:
         logger.info("[dim]passthrough (tool continuation) -> %s[/dim]", requested_model)
@@ -92,19 +101,40 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
         else:
             logger.info("%s -> %s", decision.tier, decision.model)
         body["model"] = decision.model
-        raw_body = json.dumps(body).encode()
+
+    model = body.get("model", "")
+    _clamp_max_tokens(body, model, limits)
 
     url = f"{config.proxy.upstream_base_url}/v1/messages"
-    headers = filtered_headers(dict(request.headers))
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    headers = upstream_request_headers(dict(request.headers))
 
-    start = time.monotonic()
-    upstream_request = client.build_request("POST", url, headers=headers, content=raw_body)
-    upstream_response = await client.send(upstream_request, stream=True)
-    latency_ms = (time.monotonic() - start) * 1000
-    logger.info("[dim]upstream responded %s in %.0fms[/dim]", upstream_response.status_code, latency_ms)
+    upstream_response = await _send(client, url, headers, body)
+
+    if upstream_response.status_code == 400:
+        error_body = await upstream_response.aread()
+        await upstream_response.aclose()
+        ceiling = parse_max_tokens_ceiling(error_body)
+        sent = body.get("max_tokens")
+        if ceiling is None or sent is None or ceiling >= sent:
+            return _error_response(model, upstream_response, error_body)
+
+        logger.warning(
+            "[yellow]%s rejected max_tokens=%s; API limit is %s (config says %s). "
+            "Retrying with %s -- update model_limits in config.yaml.[/yellow]",
+            model, sent, ceiling, limits.configured_max_output_tokens(model), ceiling,
+        )
+        limits.learn(model, ceiling)
+        body["max_tokens"] = ceiling
+        upstream_response = await _send(client, url, headers, body)
+
+    if upstream_response.status_code >= 400:
+        error_body = await upstream_response.aread()
+        await upstream_response.aclose()
+        return _error_response(model, upstream_response, error_body)
 
     response_headers = filtered_headers(dict(upstream_response.headers))
-
     if body.get("stream"):
         return StreamingResponse(
             upstream_response.aiter_raw(),
@@ -116,6 +146,66 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     content = await upstream_response.aread()
     await upstream_response.aclose()
     return Response(content=content, status_code=upstream_response.status_code, headers=response_headers)
+
+
+def _clamp_max_tokens(body: dict, model: str, limits: LimitRegistry) -> None:
+    """Clamps the request body's `max_tokens` to the model's known ceiling, in place.
+
+    Applies to every request, routed or passthrough -- clamping down to a
+    model's real limit can't make a valid request invalid.
+
+    Args:
+        body: The parsed request body, modified in place.
+        model: The model ID the request will be sent to.
+        limits: The registry of known per-model ceilings.
+    """
+    requested = body.get("max_tokens")
+    clamped = limits.clamp(model, requested)
+    if clamped != requested:
+        logger.info("[dim]clamped max_tokens %s -> %s for %s[/dim]", requested, clamped, model)
+        body["max_tokens"] = clamped
+
+
+async def _send(client: httpx.AsyncClient, url: str, headers: dict[str, str], body: dict) -> httpx.Response:
+    """Sends a JSON body upstream as a streaming request and logs status/latency.
+
+    Args:
+        client: Shared HTTP client.
+        url: Full upstream URL, including any query string.
+        headers: Already-filtered request headers.
+        body: Request body, serialized to JSON.
+
+    Returns:
+        The upstream response, with its body not yet read.
+    """
+    start = time.monotonic()
+    request = client.build_request("POST", url, headers=headers, content=json.dumps(body).encode())
+    response = await client.send(request, stream=True)
+    latency_ms = (time.monotonic() - start) * 1000
+    logger.info("[dim]upstream responded %s in %.0fms[/dim]", response.status_code, latency_ms)
+    return response
+
+
+def _error_response(model: str, upstream_response: httpx.Response, error_body: bytes) -> Response:
+    """Logs an upstream error's body and returns it to the client unchanged.
+
+    Args:
+        model: The model ID the failed request was sent to, for the log line.
+        upstream_response: The upstream error response (already read).
+        error_body: The response body.
+
+    Returns:
+        A buffered `Response` with the upstream's status, headers, and body.
+    """
+    logger.warning(
+        "[red]upstream %s for %s: %s[/red]",
+        upstream_response.status_code, model, escape(error_body[:_ERROR_LOG_CHARS].decode(errors="replace")),
+    )
+    return Response(
+        content=error_body,
+        status_code=upstream_response.status_code,
+        headers=filtered_headers(dict(upstream_response.headers)),
+    )
 
 
 async def _forward_unmodified(request: Request, app: FastAPI, full_path: str, raw_body: bytes | None = None) -> Response:
@@ -138,7 +228,7 @@ async def _forward_unmodified(request: Request, app: FastAPI, full_path: str, ra
     url = f"{config.proxy.upstream_base_url}/{full_path}"
     if request.url.query:
         url = f"{url}?{request.url.query}"
-    headers = filtered_headers(dict(request.headers))
+    headers = upstream_request_headers(dict(request.headers))
 
     upstream_request = client.build_request(request.method, url, headers=headers, content=body)
     upstream_response = await client.send(upstream_request, stream=True)

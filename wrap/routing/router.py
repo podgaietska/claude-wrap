@@ -96,7 +96,8 @@ class Router:
         """Decides which model a request's newest turn should be routed to.
 
         Escalates a "small" classification to "large" if the conversation
-        is too big for the small tier's context window.
+        is too big for the small model's context window. Skipped when the
+        small model has no entry in `model_limits`, since its window is unknown.
 
         Args:
             messages: The Messages API `messages` array from the incoming
@@ -123,7 +124,8 @@ class Router:
 
         small_tier = self.config.tiers.get("small")
         if tier == "small" and small_tier is not None:
-            if not fits_in_window(messages, small_tier.context_window):
+            limits = self.config.model_limits.get(small_tier.model)
+            if limits is not None and not fits_in_window(messages, limits.context_window):
                 tier = "large"
 
         model = self.config.tiers[tier].model

@@ -45,17 +45,29 @@ This starts the proxy on `127.0.0.1:8787` (configurable in `config/config.yaml`)
 tiers:
   small:
     model: claude-haiku-4-5-20251001
-    context_window: 200000
   large:
     model: claude-sonnet-5
+
+model_limits:
+  claude-haiku-4-5-20251001:
+    max_output_tokens: 64000
+    context_window: 200000
+  claude-sonnet-5:
+    max_output_tokens: 128000
     context_window: 1000000
+  # ...
 
 routing:
   strategy: heuristic
   complexity_threshold: 0.5   # score >= threshold routes to "large"
 ```
 
-Swap in any model IDs you have access to — the router only needs the tier name -> model ID mapping and each tier's context window (used as a safety check so a long conversation never gets routed to a model whose context window can't hold it).
+Swap in any model IDs you have access to. `model_limits` is keyed by model ID and serves two purposes:
+
+- **`max_output_tokens`** — Claude Code sizes `max_tokens` for the model it *thinks* it's calling, so every request (routed or passthrough) is clamped to the target model's real ceiling. If a limit is stale and the API rejects a request anyway, the proxy reads the real limit from the error, retries once, uses the learned value for the rest of the session, and logs a warning to update the table.
+- **`context_window`** — a safety check so a long conversation never gets routed to a model whose context window can't hold it.
+
+Models missing from the table aren't clamped up front; the 400 fallback still covers them.
 
 ## Testing
 

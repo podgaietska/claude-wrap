@@ -1,16 +1,27 @@
-from wrap.config import CacheConfig, Config, ProxyConfig, RoutingConfig, TelemetryConfig, TierConfig
+from wrap.config import (
+    CacheConfig,
+    Config,
+    ModelLimits,
+    ProxyConfig,
+    RoutingConfig,
+    TelemetryConfig,
+    TierConfig,
+)
 from wrap.routing.context_guard import estimate_tokens, fits_in_window
 from wrap.routing.heuristic import HeuristicClassifier
 from wrap.routing.router import Router, extract_newest_human_text
 
 
-def make_config() -> Config:
+def make_config(model_limits: dict[str, ModelLimits] | None = None) -> Config:
     """Builds a minimal `Config` fixture for router/heuristic tests."""
+    if model_limits is None:
+        model_limits = {
+            "small-model": ModelLimits(max_output_tokens=4096, context_window=1000),
+            "large-model": ModelLimits(max_output_tokens=64000, context_window=100000),
+        }
     return Config(
-        tiers={
-            "small": TierConfig(model="small-model", context_window=1000),
-            "large": TierConfig(model="large-model", context_window=100000),
-        },
+        tiers={"small": TierConfig(model="small-model"), "large": TierConfig(model="large-model")},
+        model_limits=model_limits,
         routing=RoutingConfig(strategy="heuristic", complexity_threshold=0.5),
         cache=CacheConfig(enabled=False, similarity_threshold=0.92, embedding_model="x"),
         proxy=ProxyConfig(port=8787, upstream_base_url="https://api.anthropic.com", log_path="data/proxy.log"),
@@ -83,6 +94,13 @@ def test_router_forces_large_when_history_exceeds_small_context_window():
     decision = router.route(huge_history, requested_model="ignored")
     assert decision.tier == "large"
     assert decision.model == "large-model"
+
+
+def test_router_skips_context_check_when_small_model_limits_unknown():
+    router = Router(make_config(model_limits={}))
+    huge_history = [{"role": "user", "content": "x" * 20000}]
+    decision = router.route(huge_history, requested_model="ignored")
+    assert decision.tier == "small"
 
 
 def test_estimate_tokens_counts_string_and_block_content():

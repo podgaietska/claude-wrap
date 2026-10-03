@@ -7,6 +7,7 @@ _HOP_BY_HOP = {
     "connection",
     "keep-alive",
     "host",
+    "accept-encoding",
 }
 
 
@@ -28,3 +29,20 @@ def filtered_headers(headers: dict[str, str]) -> dict[str, str]:
         unchanged.
     """
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
+
+
+def upstream_request_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Prepares client request headers for forwarding, asking for an uncompressed reply.
+
+    Upstream compresses responses when allowed, and the proxy needs to read
+    response bodies (e.g. to parse error messages). Dropping the client's
+    `accept-encoding` isn't enough since httpx adds its own gzip default,
+    so `identity` is set explicitly.
+
+    Args:
+        headers: The original request headers from the client.
+
+    Returns:
+        Filtered headers with `accept-encoding: identity`.
+    """
+    return {**filtered_headers(headers), "accept-encoding": "identity"}

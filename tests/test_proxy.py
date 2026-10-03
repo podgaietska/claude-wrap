@@ -4,17 +4,30 @@ import httpx
 import respx
 from fastapi.testclient import TestClient
 
-from wrap.config import CacheConfig, Config, ProxyConfig, RoutingConfig, TelemetryConfig, TierConfig
+from wrap.config import (
+    CacheConfig,
+    Config,
+    ModelLimits,
+    ProxyConfig,
+    RoutingConfig,
+    TelemetryConfig,
+    TierConfig,
+)
 from wrap.proxy.server import create_app
+
+HEADERS = {"x-api-key": "test", "anthropic-version": "2023-06-01"}
+TOOL_RESULT_TURN = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "output"}]}]
 
 
 def make_config() -> Config:
     """Builds a minimal `Config` fixture pointing at the real Anthropic
     upstream URL (mocked per-test via `respx`)."""
     return Config(
-        tiers={
-            "small": TierConfig(model="small-model", context_window=200000),
-            "large": TierConfig(model="large-model", context_window=1000000),
+        tiers={"small": TierConfig(model="small-model"), "large": TierConfig(model="large-model")},
+        model_limits={
+            "small-model": ModelLimits(max_output_tokens=4096, context_window=200000),
+            "large-model": ModelLimits(max_output_tokens=64000, context_window=1000000),
+            "passthrough-model": ModelLimits(max_output_tokens=8000, context_window=200000),
         },
         routing=RoutingConfig(strategy="heuristic", complexity_threshold=0.5),
         cache=CacheConfig(enabled=False, similarity_threshold=0.92, embedding_model="x"),
@@ -62,6 +75,143 @@ def test_complex_message_rewrites_model_to_large_tier():
     assert response.status_code == 200
     sent_body = json.loads(route.calls.last.request.content)
     assert sent_body["model"] == "large-model"
+
+
+@respx.mock
+def test_max_tokens_is_clamped_to_the_routed_tier_ceiling():
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={"id": "msg_1", "result": "ok"})
+    )
+
+    with TestClient(create_app(make_config())) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "test", "anthropic-version": "2023-06-01"},
+            json={
+                "model": "requested-model",
+                "max_tokens": 128000,  # oversized for the small tier's 4096 ceiling
+                "messages": [{"role": "user", "content": "what is python?"}],
+            },
+        )
+
+    assert response.status_code == 200
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["model"] == "small-model"
+    assert sent_body["max_tokens"] == 4096
+
+
+@respx.mock
+def test_max_tokens_is_clamped_on_passthrough_requests_too():
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={"id": "msg_1"})
+    )
+
+    with TestClient(create_app(make_config())) as client:
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "passthrough-model", "max_tokens": 128000, "messages": TOOL_RESULT_TURN},
+        )
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["model"] == "passthrough-model"
+    assert sent_body["max_tokens"] == 8000
+
+
+@respx.mock
+def test_max_tokens_400_is_retried_with_the_ceiling_from_the_error():
+    error = {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "max_tokens: 4096 > 2048, which is the maximum allowed number of output tokens for small-model",
+        },
+    }
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=[httpx.Response(400, json=error), httpx.Response(200, json={"id": "msg_1"})]
+    )
+
+    with TestClient(create_app(make_config())) as client:
+        response = client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 128000, "messages": [{"role": "user", "content": "what is python?"}]},
+        )
+
+    assert response.status_code == 200
+    assert route.call_count == 2
+    first, retry = (json.loads(call.request.content) for call in route.calls)
+    assert first["max_tokens"] == 4096  # configured (stale) ceiling
+    assert retry["max_tokens"] == 2048  # ceiling learned from the error
+
+
+@respx.mock
+def test_learned_ceiling_is_used_for_later_requests_without_another_400():
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": "max_tokens: 4096 > 2048, ..."}}
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=[
+            httpx.Response(400, json=error),
+            httpx.Response(200, json={"id": "msg_1"}),
+            httpx.Response(200, json={"id": "msg_2"}),
+        ]
+    )
+    request_json = {"model": "x", "max_tokens": 128000, "messages": [{"role": "user", "content": "what is python?"}]}
+
+    with TestClient(create_app(make_config())) as client:
+        client.post("/v1/messages", headers=HEADERS, json=request_json)
+        client.post("/v1/messages", headers=HEADERS, json=request_json)
+
+    assert route.call_count == 3
+    assert json.loads(route.calls.last.request.content)["max_tokens"] == 2048
+
+
+@respx.mock
+def test_unrelated_400_is_returned_unchanged_without_retry():
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": "messages: field required"}}
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(400, json=error))
+
+    with TestClient(create_app(make_config())) as client:
+        response = client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == error
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_query_string_is_forwarded():
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={"id": "msg_1"})
+    )
+
+    with TestClient(create_app(make_config())) as client:
+        client.post(
+            "/v1/messages?beta=true",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert route.calls.last.request.url.query == b"beta=true"
+
+
+@respx.mock
+def test_upstream_is_asked_for_an_uncompressed_response():
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={"id": "msg_1"})
+    )
+
+    with TestClient(create_app(make_config())) as client:
+        client.post(
+            "/v1/messages",
+            headers={**HEADERS, "accept-encoding": "gzip, br"},
+            json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert route.calls.last.request.headers["accept-encoding"] == "identity"
 
 
 @respx.mock
