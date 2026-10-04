@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import time
@@ -15,6 +16,7 @@ from wrap.adapt.adapters import adapt_request
 from wrap.adapt.error_rules import match_error
 from wrap.adapt.registry import CapabilityRegistry
 from wrap.config import Config, load_config
+from wrap.proxy.describe import describe_decision, describe_request
 from wrap.proxy.upstream import filtered_headers, upstream_request_headers
 from wrap.routing.router import Router
 
@@ -50,19 +52,20 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.config = config
     app.state.router = Router(config)
     app.state.capabilities = CapabilityRegistry(config.models)
+    app.state.request_ids = itertools.count(1)
 
     @app.post("/v1/messages")
     async def messages(request: Request):
-        return await _handle_messages(request, app)
+        return await _handle_messages(request, app, next(app.state.request_ids))
 
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def passthrough(request: Request, full_path: str):
-        return await _forward_unmodified(request, app, full_path)
+        return await _forward_unmodified(request, app, full_path, next(app.state.request_ids))
 
     return app
 
 
-async def _handle_messages(request: Request, app: FastAPI) -> Response:
+async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Response:
     """Routes a request, adapts it to the chosen model, then forwards upstream.
 
     If the API rejects the request with an error a known rule explains (the
@@ -72,6 +75,7 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     Args:
         request: Incoming request from the client (Claude Code).
         app: The FastAPI app, for shared state set up in `create_app`.
+        req_id: Id used to tie this request's log lines together.
 
     Returns:
         A streamed or buffered `Response` mirroring the upstream reply.
@@ -85,51 +89,43 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     try:
         body = json.loads(raw_body)
     except json.JSONDecodeError:
-        return await _forward_unmodified(request, app, "v1/messages", raw_body=raw_body)
+        return await _forward_unmodified(request, app, "v1/messages", req_id, raw_body=raw_body)
 
-    requested_model = body.get("model", "")
-    decision = router.route(body.get("messages", []), requested_model)
-    if decision.is_tool_continuation:
-        logger.info("[dim]passthrough (tool continuation) -> %s[/dim]", requested_model)
-    elif decision.complexity:
-        c = decision.complexity
-        logger.info(
-            "[bold cyan]%s[/bold cyan] -> %s (score=%.2f, %s)",
-            decision.tier, decision.model, c.score, escape(c.reasoning),
-        )
+    decision = router.route(body.get("messages", []), body.get("model", ""))
+    logger.info("#%d %s  %s", req_id, describe_request(body), describe_decision(decision))
     body["model"] = model = decision.model
-    _adapt(body, model, capabilities)
+    _adapt(body, model, capabilities, req_id)
 
     url = f"{config.proxy.upstream_base_url}/v1/messages"
     if request.url.query:
         url = f"{url}?{request.url.query}"
     headers = upstream_request_headers(dict(request.headers))
 
-    upstream_response = await _send(client, url, headers, body)
+    upstream_response = await _send(client, url, headers, body, req_id)
 
     if upstream_response.status_code == 400:
         error_body = await upstream_response.aread()
         await upstream_response.aclose()
         matched = match_error(error_body)
         if matched is None:
-            return _error_response(model, upstream_response, error_body)
+            return _error_response(req_id, model, upstream_response, error_body)
         rule, updates = matched
         configured = {k: getattr(capabilities.configured(model), k) for k in updates}
         if not capabilities.learn(model, updates):
-            return _error_response(model, upstream_response, error_body)
+            return _error_response(req_id, model, upstream_response, error_body)
 
         logger.warning(
-            "[yellow]%s rejected the request (%s): learned %s, config says %s. "
+            "[yellow]#%d %s rejected the request (%s): learned %s, config says %s. "
             "Retrying -- update models in config.yaml.[/yellow]",
-            model, rule.name, escape(str(updates)), escape(str(configured)),
+            req_id, model, rule.name, escape(str(updates)), escape(str(configured)),
         )
-        _adapt(body, model, capabilities)
-        upstream_response = await _send(client, url, headers, body)
+        _adapt(body, model, capabilities, req_id)
+        upstream_response = await _send(client, url, headers, body, req_id)
 
     if upstream_response.status_code >= 400:
         error_body = await upstream_response.aread()
         await upstream_response.aclose()
-        return _error_response(model, upstream_response, error_body)
+        return _error_response(req_id, model, upstream_response, error_body)
 
     response_headers = filtered_headers(dict(upstream_response.headers))
     if body.get("stream"):
@@ -145,7 +141,7 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     return Response(content=content, status_code=upstream_response.status_code, headers=response_headers)
 
 
-def _adapt(body: dict, model: str, capabilities: CapabilityRegistry) -> None:
+def _adapt(body: dict, model: str, capabilities: CapabilityRegistry, req_id: int) -> None:
     """Adapts the request body to the model's capabilities in place and logs the changes.
 
     Applies to every request, routed or not -- adapters only change settings
@@ -156,13 +152,14 @@ def _adapt(body: dict, model: str, capabilities: CapabilityRegistry) -> None:
         body: The parsed request body, modified in place.
         model: The model ID the request will be sent to.
         capabilities: The registry of known per-model capabilities.
+        req_id: Id used to tie this request's log lines together.
     """
     notes = adapt_request(body, capabilities.get(model))
     if notes:
-        logger.info("[dim]adapted for %s: %s[/dim]", model, escape("; ".join(notes)))
+        logger.info("[dim]#%d adapted for %s: %s[/dim]", req_id, model, escape("; ".join(notes)))
 
 
-async def _send(client: httpx.AsyncClient, url: str, headers: dict[str, str], body: dict) -> httpx.Response:
+async def _send(client: httpx.AsyncClient, url: str, headers: dict[str, str], body: dict, req_id: int) -> httpx.Response:
     """Sends a JSON body upstream as a streaming request and logs status/latency.
 
     Args:
@@ -170,6 +167,7 @@ async def _send(client: httpx.AsyncClient, url: str, headers: dict[str, str], bo
         url: Full upstream URL, including any query string.
         headers: Already-filtered request headers.
         body: Request body, serialized to JSON.
+        req_id: Id used to tie this request's log lines together.
 
     Returns:
         The upstream response, with its body not yet read.
@@ -178,14 +176,15 @@ async def _send(client: httpx.AsyncClient, url: str, headers: dict[str, str], bo
     request = client.build_request("POST", url, headers=headers, content=json.dumps(body).encode())
     response = await client.send(request, stream=True)
     latency_ms = (time.monotonic() - start) * 1000
-    logger.info("[dim]upstream responded %s in %.0fms[/dim]", response.status_code, latency_ms)
+    logger.info("[dim]#%d ← %s in %.0fms[/dim]", req_id, response.status_code, latency_ms)
     return response
 
 
-def _error_response(model: str, upstream_response: httpx.Response, error_body: bytes) -> Response:
+def _error_response(req_id: int, model: str, upstream_response: httpx.Response, error_body: bytes) -> Response:
     """Logs an upstream error's body and returns it to the client unchanged.
 
     Args:
+        req_id: Id used to tie this request's log lines together.
         model: The model ID the failed request was sent to, for the log line.
         upstream_response: The upstream error response (already read).
         error_body: The response body.
@@ -194,8 +193,8 @@ def _error_response(model: str, upstream_response: httpx.Response, error_body: b
         A buffered `Response` with the upstream's status, headers, and body.
     """
     logger.warning(
-        "[red]upstream %s for %s: %s[/red]",
-        upstream_response.status_code, model,
+        "[red]#%d upstream %s for %s: %s[/red]",
+        req_id, upstream_response.status_code, model,
         escape(error_body[:_ERROR_LOG_CHARS].decode(errors="replace")),
     )
     return Response(
@@ -205,13 +204,16 @@ def _error_response(model: str, upstream_response: httpx.Response, error_body: b
     )
 
 
-async def _forward_unmodified(request: Request, app: FastAPI, full_path: str, raw_body: bytes | None = None) -> Response:
+async def _forward_unmodified(
+    request: Request, app: FastAPI, full_path: str, req_id: int, raw_body: bytes | None = None
+) -> Response:
     """Forwards a request to the upstream API unchanged, with no routing.
 
     Args:
         request: Incoming request to forward.
         app: The FastAPI app, for shared state set up in `create_app`.
         full_path: Upstream path, relative to `config.proxy.upstream_base_url`.
+        req_id: Id used to tie this request's log lines together.
         raw_body: Body to send if already read by the caller, to avoid
             re-reading the request stream.
 
@@ -227,8 +229,14 @@ async def _forward_unmodified(request: Request, app: FastAPI, full_path: str, ra
         url = f"{url}?{request.url.query}"
     headers = upstream_request_headers(dict(request.headers))
 
+    start = time.monotonic()
     upstream_request = client.build_request(request.method, url, headers=headers, content=body)
     upstream_response = await client.send(upstream_request, stream=True)
+    latency_ms = (time.monotonic() - start) * 1000
+    logger.info(
+        "[dim]#%d passthrough %s /%s ← %s in %.0fms[/dim]",
+        req_id, request.method, escape(full_path), upstream_response.status_code, latency_ms,
+    )
     response_headers = filtered_headers(dict(upstream_response.headers))
 
     if "text/event-stream" in upstream_response.headers.get("content-type", ""):

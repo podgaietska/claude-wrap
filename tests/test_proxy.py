@@ -270,6 +270,24 @@ def test_other_paths_are_forwarded_unmodified():
 
 
 @respx.mock
+def test_question_followed_by_system_reminder_is_routed():
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json={}))
+
+    with TestClient(create_app(make_config())) as client:
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={
+                "model": "requested-model",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "what is python?"}, {"role": "system", "content": "<r>"}],
+            },
+        )
+
+    assert json.loads(route.calls.last.request.content)["model"] == "small-model"
+
+
+@respx.mock
 def test_effort_400_is_learned_and_retried_without_effort():
     error = {"type": "error", "error": {"type": "invalid_request_error", "message": "This model does not support the effort parameter."}}
     route = respx.post("https://api.anthropic.com/v1/messages").mock(

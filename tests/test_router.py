@@ -9,7 +9,16 @@ from wrap.config import (
 )
 from wrap.routing.context_guard import estimate_tokens, fits_in_window
 from wrap.routing.heuristic import HeuristicClassifier
-from wrap.routing.router import Router, extract_newest_human_text
+from wrap.routing.router import Router, find_turn, human_text
+
+COMPLEX_TEXT = (
+    "Please explain step by step how you would refactor this architecture, "
+    "compare the trade-offs between microservices and a monolith, and analyze "
+    "why the current design has issues."
+)
+SYSTEM_REMINDER = {"role": "system", "content": "<reminder>"}
+TOOL_USE = {"role": "assistant", "content": [{"type": "tool_use", "id": "1", "name": "Read", "input": {}}]}
+TOOL_RESULT = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "file contents"}]}
 
 
 def make_config(models: dict[str, ModelCapabilities] | None = None) -> Config:
@@ -36,12 +45,7 @@ def test_heuristic_trivial_question_routes_small():
 
 
 def test_heuristic_complex_question_routes_large():
-    text = (
-        "Please explain step by step how you would refactor this architecture, "
-        "compare the trade-offs between microservices and a monolith, and analyze "
-        "why the current design has issues."
-    )
-    result = HeuristicClassifier().classify(text, threshold=0.5)
+    result = HeuristicClassifier().classify(COMPLEX_TEXT, threshold=0.5)
     assert result.tier == "large"
     assert result.score >= 0.5
 
@@ -52,40 +56,86 @@ def test_heuristic_code_indicators_push_toward_large():
     assert "code indicators" in result.reasoning
 
 
-def test_extract_newest_human_text_plain_string():
-    messages = [{"role": "user", "content": "hello there"}]
-    assert extract_newest_human_text(messages) == "hello there"
+def test_human_text_reads_string_and_text_blocks():
+    assert human_text({"role": "user", "content": "hello"}) == "hello"
+    assert human_text({"role": "user", "content": [{"type": "text", "text": "hi"}]}) == "hi"
 
 
-def test_extract_newest_human_text_tool_result_is_continuation():
+def test_human_text_skips_injected_system_reminder_blocks():
+    message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "<system-reminder>\nCLAUDE.md contents, explain the architecture..."},
+            {"type": "text", "text": "<system-reminder>\nmore context</system-reminder>"},
+            {"type": "text", "text": "what is 2+2?"},
+        ],
+    }
+    assert human_text(message) == "what is 2+2?"
+
+
+def test_reminder_only_message_is_not_a_question():
+    assert human_text({"role": "user", "content": "<system-reminder>\ncontext"}) is None
+    turn = find_turn([
+        {"role": "user", "content": "the real question"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": [{"type": "text", "text": "<system-reminder>\nctx"}]},
+    ])
+    assert turn.text == "the real question"
+
+
+def test_human_text_ignores_tool_results_and_other_roles():
+    assert human_text(TOOL_RESULT) is None
+    assert human_text({"role": "assistant", "content": "answer"}) is None
+    assert human_text(SYSTEM_REMINDER) is None
+
+
+def test_find_turn_skips_trailing_system_reminder():
+    turn = find_turn([{"role": "user", "content": "what is 2+2?"}, SYSTEM_REMINDER])
+    assert turn.text == "what is 2+2?"
+    assert turn.index == 0
+    assert turn.is_continuation is False
+
+
+def test_find_turn_walks_back_past_tool_calls_to_the_question():
     messages = [
-        {"role": "user", "content": "first question"},
-        {"role": "assistant", "content": [{"type": "tool_use", "id": "1", "name": "read_file"}]},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "file contents"}]},
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "what's in config.yaml?"},
+        TOOL_USE,
+        TOOL_RESULT,
+        SYSTEM_REMINDER,
     ]
-    assert extract_newest_human_text(messages) is None
+    turn = find_turn(messages)
+    assert turn.text == "what's in config.yaml?"
+    assert turn.index == 2
+    assert turn.is_continuation is True
 
 
-def test_extract_newest_human_text_ignores_assistant_last_turn():
-    messages = [{"role": "assistant", "content": "the answer"}]
-    assert extract_newest_human_text(messages) is None
+def test_find_turn_returns_none_without_human_text():
+    assert find_turn([TOOL_RESULT]) is None
+    assert find_turn([]) is None
 
 
-def test_router_routes_tool_continuation_unchanged():
+def test_router_routes_question_ending_with_system_reminder():
     router = Router(make_config())
-    messages = [
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "output"}]},
-    ]
-    decision = router.route(messages, requested_model="whatever-model")
-    assert decision.is_tool_continuation is True
-    assert decision.model == "whatever-model"
+    decision = router.route([{"role": "user", "content": COMPLEX_TEXT}, SYSTEM_REMINDER], requested_model="opus")
+    assert decision.routed is True
+    assert decision.model == "large-model"
 
 
-def test_router_routes_trivial_to_small():
+def test_router_routes_tool_continuations_by_the_turns_question():
     router = Router(make_config())
-    decision = router.route([{"role": "user", "content": "what is python?"}], requested_model="ignored")
-    assert decision.tier == "small"
+    messages = [{"role": "user", "content": "what is python?"}, TOOL_USE, TOOL_RESULT]
+    decision = router.route(messages, requested_model="opus")
+    assert decision.routed is True
     assert decision.model == "small-model"
+    assert decision.turn.is_continuation is True
+
+
+def test_router_leaves_model_alone_without_a_question():
+    decision = Router(make_config()).route([TOOL_RESULT], requested_model="opus")
+    assert decision.routed is False
+    assert decision.model == "opus"
 
 
 def test_router_forces_large_when_history_exceeds_small_context_window():
@@ -96,10 +146,9 @@ def test_router_forces_large_when_history_exceeds_small_context_window():
     assert decision.model == "large-model"
 
 
-def test_router_skips_context_check_when_small_model_limits_unknown():
+def test_router_skips_context_check_when_small_model_window_unknown():
     router = Router(make_config(models={}))
-    huge_history = [{"role": "user", "content": "x" * 20000}]
-    decision = router.route(huge_history, requested_model="ignored")
+    decision = router.route([{"role": "user", "content": "x" * 20000}], requested_model="ignored")
     assert decision.tier == "small"
 
 
