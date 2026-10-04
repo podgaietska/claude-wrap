@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from wrap.config import (
     CacheConfig,
     Config,
-    ModelLimits,
+    ModelCapabilities,
     ProxyConfig,
     RoutingConfig,
     TelemetryConfig,
@@ -24,10 +24,10 @@ def make_config() -> Config:
     upstream URL (mocked per-test via `respx`)."""
     return Config(
         tiers={"small": TierConfig(model="small-model"), "large": TierConfig(model="large-model")},
-        model_limits={
-            "small-model": ModelLimits(max_output_tokens=4096, context_window=200000),
-            "large-model": ModelLimits(max_output_tokens=64000, context_window=1000000),
-            "passthrough-model": ModelLimits(max_output_tokens=8000, context_window=200000),
+        models={
+            "small-model": ModelCapabilities(max_output_tokens=4096, context_window=200000),
+            "large-model": ModelCapabilities(max_output_tokens=64000, context_window=1000000),
+            "passthrough-model": ModelCapabilities(max_output_tokens=8000, context_window=200000),
         },
         routing=RoutingConfig(strategy="heuristic", complexity_threshold=0.5),
         cache=CacheConfig(enabled=False, similarity_threshold=0.92, embedding_model="x"),
@@ -101,7 +101,7 @@ def test_max_tokens_is_clamped_to_the_routed_tier_ceiling():
 
 
 @respx.mock
-def test_max_tokens_is_clamped_on_passthrough_requests_too():
+def test_requests_without_a_question_are_still_adapted():
     route = respx.post("https://api.anthropic.com/v1/messages").mock(
         return_value=httpx.Response(200, json={"id": "msg_1"})
     )
@@ -215,7 +215,7 @@ def test_upstream_is_asked_for_an_uncompressed_response():
 
 
 @respx.mock
-def test_tool_continuation_passes_model_through_unchanged():
+def test_request_without_a_question_keeps_its_model():
     route = respx.post("https://api.anthropic.com/v1/messages").mock(
         return_value=httpx.Response(200, json={"id": "msg_1", "result": "ok"})
     )
@@ -267,3 +267,27 @@ def test_other_paths_are_forwarded_unmodified():
 
     assert response.status_code == 200
     assert route.called
+
+
+@respx.mock
+def test_effort_400_is_learned_and_retried_without_effort():
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": "This model does not support the effort parameter."}}
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=[httpx.Response(400, json=error), httpx.Response(200, json={}), httpx.Response(200, json={})]
+    )
+    request_json = {
+        "model": "x",
+        "max_tokens": 100,
+        "output_config": {"effort": "medium"},
+        "messages": [{"role": "user", "content": "what is python?"}],
+    }
+
+    with TestClient(create_app(make_config())) as client:
+        first = client.post("/v1/messages", headers=HEADERS, json=request_json)
+        client.post("/v1/messages", headers=HEADERS, json=request_json)
+
+    assert first.status_code == 200
+    bodies = [json.loads(call.request.content) for call in route.calls]
+    assert "output_config" in bodies[0]
+    assert "output_config" not in bodies[1]  # retry
+    assert "output_config" not in bodies[2]  # later request uses the learned capability, no extra 400

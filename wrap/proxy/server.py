@@ -11,8 +11,10 @@ from fastapi.responses import Response, StreamingResponse
 from rich.logging import RichHandler
 from rich.markup import escape
 
+from wrap.adapt.adapters import adapt_request
+from wrap.adapt.error_rules import match_error
+from wrap.adapt.registry import CapabilityRegistry
 from wrap.config import Config, load_config
-from wrap.proxy.limits import LimitRegistry, parse_max_tokens_ceiling
 from wrap.proxy.upstream import filtered_headers, upstream_request_headers
 from wrap.routing.router import Router
 
@@ -37,7 +39,6 @@ def create_app(config: Config | None = None) -> FastAPI:
         A configured `FastAPI` app.
     """
     config = config or load_config()
-    router = Router(config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -47,8 +48,8 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.state.config = config
-    app.state.router = router
-    app.state.limits = LimitRegistry(config.model_limits)
+    app.state.router = Router(config)
+    app.state.capabilities = CapabilityRegistry(config.models)
 
     @app.post("/v1/messages")
     async def messages(request: Request):
@@ -62,11 +63,11 @@ def create_app(config: Config | None = None) -> FastAPI:
 
 
 async def _handle_messages(request: Request, app: FastAPI) -> Response:
-    """Routes the newest turn's model, clamps max_tokens, then forwards upstream.
+    """Routes a request, adapts it to the chosen model, then forwards upstream.
 
-    If the API still rejects `max_tokens` (the configured limit is stale),
-    the real ceiling is parsed from the error, remembered for the session,
-    and the request is retried once.
+    If the API rejects the request with an error a known rule explains (the
+    configured capabilities were stale), the correction is learned for the
+    session, the request is re-adapted, and it's retried once.
 
     Args:
         request: Incoming request from the client (Claude Code).
@@ -77,7 +78,7 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     """
     config: Config = app.state.config
     router: Router = app.state.router
-    limits: LimitRegistry = app.state.limits
+    capabilities: CapabilityRegistry = app.state.capabilities
     client: httpx.AsyncClient = app.state.http_client
 
     raw_body = await request.body()
@@ -88,22 +89,16 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
 
     requested_model = body.get("model", "")
     decision = router.route(body.get("messages", []), requested_model)
-
     if decision.is_tool_continuation:
         logger.info("[dim]passthrough (tool continuation) -> %s[/dim]", requested_model)
-    else:
+    elif decision.complexity:
         c = decision.complexity
-        if c:
-            logger.info(
-                "[bold cyan]%s[/bold cyan] -> %s (score=%.2f, %s)",
-                decision.tier, decision.model, c.score, c.reasoning,
-            )
-        else:
-            logger.info("%s -> %s", decision.tier, decision.model)
-        body["model"] = decision.model
-
-    model = body.get("model", "")
-    _clamp_max_tokens(body, model, limits)
+        logger.info(
+            "[bold cyan]%s[/bold cyan] -> %s (score=%.2f, %s)",
+            decision.tier, decision.model, c.score, escape(c.reasoning),
+        )
+    body["model"] = model = decision.model
+    _adapt(body, model, capabilities)
 
     url = f"{config.proxy.upstream_base_url}/v1/messages"
     if request.url.query:
@@ -115,18 +110,20 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     if upstream_response.status_code == 400:
         error_body = await upstream_response.aread()
         await upstream_response.aclose()
-        ceiling = parse_max_tokens_ceiling(error_body)
-        sent = body.get("max_tokens")
-        if ceiling is None or sent is None or ceiling >= sent:
+        matched = match_error(error_body)
+        if matched is None:
+            return _error_response(model, upstream_response, error_body)
+        rule, updates = matched
+        configured = {k: getattr(capabilities.configured(model), k) for k in updates}
+        if not capabilities.learn(model, updates):
             return _error_response(model, upstream_response, error_body)
 
         logger.warning(
-            "[yellow]%s rejected max_tokens=%s; API limit is %s (config says %s). "
-            "Retrying with %s -- update model_limits in config.yaml.[/yellow]",
-            model, sent, ceiling, limits.configured_max_output_tokens(model), ceiling,
+            "[yellow]%s rejected the request (%s): learned %s, config says %s. "
+            "Retrying -- update models in config.yaml.[/yellow]",
+            model, rule.name, escape(str(updates)), escape(str(configured)),
         )
-        limits.learn(model, ceiling)
-        body["max_tokens"] = ceiling
+        _adapt(body, model, capabilities)
         upstream_response = await _send(client, url, headers, body)
 
     if upstream_response.status_code >= 400:
@@ -148,22 +145,21 @@ async def _handle_messages(request: Request, app: FastAPI) -> Response:
     return Response(content=content, status_code=upstream_response.status_code, headers=response_headers)
 
 
-def _clamp_max_tokens(body: dict, model: str, limits: LimitRegistry) -> None:
-    """Clamps the request body's `max_tokens` to the model's known ceiling, in place.
+def _adapt(body: dict, model: str, capabilities: CapabilityRegistry) -> None:
+    """Adapts the request body to the model's capabilities in place and logs the changes.
 
-    Applies to every request, routed or passthrough -- clamping down to a
-    model's real limit can't make a valid request invalid.
+    Applies to every request, routed or not -- adapters only change settings
+    the target model doesn't support, so a request Claude Code built for
+    this very model passes through untouched.
 
     Args:
         body: The parsed request body, modified in place.
         model: The model ID the request will be sent to.
-        limits: The registry of known per-model ceilings.
+        capabilities: The registry of known per-model capabilities.
     """
-    requested = body.get("max_tokens")
-    clamped = limits.clamp(model, requested)
-    if clamped != requested:
-        logger.info("[dim]clamped max_tokens %s -> %s for %s[/dim]", requested, clamped, model)
-        body["max_tokens"] = clamped
+    notes = adapt_request(body, capabilities.get(model))
+    if notes:
+        logger.info("[dim]adapted for %s: %s[/dim]", model, escape("; ".join(notes)))
 
 
 async def _send(client: httpx.AsyncClient, url: str, headers: dict[str, str], body: dict) -> httpx.Response:
@@ -199,7 +195,8 @@ def _error_response(model: str, upstream_response: httpx.Response, error_body: b
     """
     logger.warning(
         "[red]upstream %s for %s: %s[/red]",
-        upstream_response.status_code, model, escape(error_body[:_ERROR_LOG_CHARS].decode(errors="replace")),
+        upstream_response.status_code, model,
+        escape(error_body[:_ERROR_LOG_CHARS].decode(errors="replace")),
     )
     return Response(
         content=error_body,

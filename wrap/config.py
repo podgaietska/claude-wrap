@@ -20,21 +20,48 @@ class TierConfig:
     model: str
 
 
-@dataclass
-class ModelLimits:
-    """A model's input and output token limits.
+@dataclass(frozen=True)
+class ModelCapabilities:
+    """What a model supports, used to adapt requests built for a different model.
+
+    Claude Code shapes every request for the model it thinks it's calling,
+    so when the proxy swaps the model, unsupported settings must be adjusted
+    or the API rejects the request. Every field is optional: None means
+    unknown, and the request is left as-is for that setting.
 
     Attributes:
-        max_output_tokens: The model's real `max_tokens` ceiling. Claude
-            Code sizes `max_tokens` for whatever model it thinks it's
-            calling, so requests are clamped to this or the API rejects
-            them once the proxy swaps the model.
-        context_window: The model's context window in tokens, used to
-            avoid routing a long conversation to a model that can't hold it.
+        max_output_tokens: The model's real `max_tokens` ceiling.
+        context_window: The model's context window in tokens, used to avoid
+            routing a long conversation to a model that can't hold it.
+        effort: Whether `output_config.effort` is supported.
+        thinking: Supported `thinking.type` values, e.g. ("adaptive",) or ("enabled",).
+        thinking_budget: If set, adaptive thinking is converted to
+            `{"type": "enabled", "budget_tokens": N}` for models that only
+            support "enabled"; if None, thinking is dropped instead.
+        mid_conversation_system: Whether `role: "system"` entries are allowed
+            inside `messages`.
+        context_edits: Supported `context_management.edits` types.
     """
 
-    max_output_tokens: int
-    context_window: int
+    max_output_tokens: int | None = None
+    context_window: int | None = None
+    effort: bool | None = None
+    thinking: tuple[str, ...] | None = None
+    thinking_budget: int | None = None
+    mid_conversation_system: bool | None = None
+    context_edits: tuple[str, ...] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ModelCapabilities:
+        """Builds capabilities from a config entry, converting lists to tuples.
+
+        Args:
+            data: One model's entry from the `models` config section.
+
+        Returns:
+            The parsed `ModelCapabilities`.
+        """
+        return cls(**{k: tuple(v) if isinstance(v, list) else v for k, v in data.items()})
 
 
 @dataclass
@@ -108,8 +135,9 @@ class Config:
     Attributes:
         tiers: Mapping of tier name (e.g. "small", "large") to its
             `TierConfig`.
-        model_limits: Mapping of model ID to its known `ModelLimits`.
-            Models missing from this table aren't clamped proactively.
+        models: Mapping of model ID to its known `ModelCapabilities`.
+            Requests to models missing from this table aren't adapted
+            up front (the 400 fallback still applies).
         routing: Complexity classification and routing settings.
         cache: Semantic cache settings.
         proxy: Local proxy server settings.
@@ -117,7 +145,7 @@ class Config:
     """
 
     tiers: dict[str, TierConfig]
-    model_limits: dict[str, ModelLimits]
+    models: dict[str, ModelCapabilities]
     routing: RoutingConfig
     cache: CacheConfig
     proxy: ProxyConfig
@@ -137,7 +165,7 @@ def load_config(path: Path | None = None) -> Config:
     Raises:
         FileNotFoundError: If `path` does not exist.
         KeyError: If the YAML is missing one of the required top-level
-            sections (`tiers`, `model_limits`, `routing`, `cache`, `proxy`,
+            sections (`tiers`, `models`, `routing`, `cache`, `proxy`,
             `telemetry`).
     """
     path = path or DEFAULT_CONFIG_PATH
@@ -145,10 +173,10 @@ def load_config(path: Path | None = None) -> Config:
         raw = yaml.safe_load(f)
 
     tiers = {name: TierConfig(**data) for name, data in raw["tiers"].items()}
-    model_limits = {model: ModelLimits(**data) for model, data in raw["model_limits"].items()}
+    models = {model: ModelCapabilities.from_dict(data) for model, data in raw["models"].items()}
     return Config(
         tiers=tiers,
-        model_limits=model_limits,
+        models=models,
         routing=RoutingConfig(**raw["routing"]),
         cache=CacheConfig(**raw["cache"]),
         proxy=ProxyConfig(**raw["proxy"]),

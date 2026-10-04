@@ -1,7 +1,7 @@
 from wrap.config import (
     CacheConfig,
     Config,
-    ModelLimits,
+    ModelCapabilities,
     ProxyConfig,
     RoutingConfig,
     TelemetryConfig,
@@ -12,16 +12,16 @@ from wrap.routing.heuristic import HeuristicClassifier
 from wrap.routing.router import Router, extract_newest_human_text
 
 
-def make_config(model_limits: dict[str, ModelLimits] | None = None) -> Config:
+def make_config(models: dict[str, ModelCapabilities] | None = None) -> Config:
     """Builds a minimal `Config` fixture for router/heuristic tests."""
-    if model_limits is None:
-        model_limits = {
-            "small-model": ModelLimits(max_output_tokens=4096, context_window=1000),
-            "large-model": ModelLimits(max_output_tokens=64000, context_window=100000),
+    if models is None:
+        models = {
+            "small-model": ModelCapabilities(max_output_tokens=4096, context_window=1000),
+            "large-model": ModelCapabilities(max_output_tokens=64000, context_window=100000),
         }
     return Config(
         tiers={"small": TierConfig(model="small-model"), "large": TierConfig(model="large-model")},
-        model_limits=model_limits,
+        models=models,
         routing=RoutingConfig(strategy="heuristic", complexity_threshold=0.5),
         cache=CacheConfig(enabled=False, similarity_threshold=0.92, embedding_model="x"),
         proxy=ProxyConfig(port=8787, upstream_base_url="https://api.anthropic.com", log_path="data/proxy.log"),
@@ -97,7 +97,7 @@ def test_router_forces_large_when_history_exceeds_small_context_window():
 
 
 def test_router_skips_context_check_when_small_model_limits_unknown():
-    router = Router(make_config(model_limits={}))
+    router = Router(make_config(models={}))
     huge_history = [{"role": "user", "content": "x" * 20000}]
     decision = router.route(huge_history, requested_model="ignored")
     assert decision.tier == "small"

@@ -4,22 +4,40 @@ tiers:
   large:
     model: claude-sonnet-5
 
-# Verified 2026-10-03 against the Models API and the API's own max_tokens errors.
-# If Anthropic lowers a limit, the proxy learns the new value from the 400,
-# retries, and logs a warning to update this table.
-model_limits:
+# Verified 2026-10-04 against the Models API (limits + capabilities) and the
+# docs (mid-conversation system messages). Claude Code shapes requests for the
+# model it thinks it's calling, so these are used to adapt requests when the
+# proxy swaps the model. If one is stale, the proxy learns the real value from
+# the API's 400, retries, and logs a warning to update this table.
+models:
   claude-haiku-4-5-20251001:
     max_output_tokens: 64000
     context_window: 200000
+    effort: false
+    thinking: [enabled]
+    mid_conversation_system: false
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015]
   claude-sonnet-5:
     max_output_tokens: 128000
     context_window: 1000000
+    effort: true
+    thinking: [adaptive]
+    mid_conversation_system: false
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015, compact_20260112]
   claude-opus-5-5:
     max_output_tokens: 128000
     context_window: 1000000
+    effort: true
+    thinking: [adaptive]
+    mid_conversation_system: true
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015, compact_20260112]
   claude-fable-5-1:
     max_output_tokens: 128000
     context_window: 1000000
+    effort: true
+    thinking: [adaptive]
+    mid_conversation_system: true
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015, compact_20260112]
 
 routing:
   strategy: heuristic
