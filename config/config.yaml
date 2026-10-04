@@ -1,0 +1,58 @@
+tiers:
+  small:
+    model: claude-haiku-4-5-20251001
+  large:
+    model: claude-sonnet-5
+
+# Verified 2026-10-04 against the Models API (limits + capabilities) and the
+# docs (mid-conversation system messages). Claude Code shapes requests for the
+# model it thinks it's calling, so these are used to adapt requests when the
+# proxy swaps the model. If one is stale, the proxy learns the real value from
+# the API's 400, retries, and logs a warning to update this table.
+models:
+  claude-haiku-4-5-20251001:
+    max_output_tokens: 64000
+    context_window: 200000
+    effort: false
+    thinking: [enabled]
+    mid_conversation_system: false
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015]
+  claude-sonnet-5:
+    max_output_tokens: 128000
+    context_window: 1000000
+    effort: true
+    thinking: [adaptive]
+    mid_conversation_system: false
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015, compact_20260112]
+  claude-opus-5-5:
+    max_output_tokens: 128000
+    context_window: 1000000
+    effort: true
+    thinking: [adaptive]
+    mid_conversation_system: true
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015, compact_20260112]
+  claude-fable-5-1:
+    max_output_tokens: 128000
+    context_window: 1000000
+    effort: true
+    thinking: [adaptive]
+    mid_conversation_system: true
+    context_edits: [clear_tool_uses_20250919, clear_thinking_20251015, compact_20260112]
+
+routing:
+  strategy: heuristic
+  complexity_threshold: 0.5
+
+cache:
+  enabled: false # Phase C
+  similarity_threshold: 0.92
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+
+proxy:
+  port: 8787
+  upstream_base_url: https://api.anthropic.com
+  log_path: data/proxy.log
+
+telemetry:
+  db_path: data/wrap.db
+  pricing_file: config/pricing.yaml
