@@ -107,11 +107,15 @@ class ProxyConfig:
             is written to, so it doesn't interleave with the wrapped
             Claude Code session's own terminal output. Read live with
             `wrap logs`.
+        log_level: "info" logs each routing decision; "debug" adds a
+            line per turn with its tokens, cost and latency. `wrap claude
+            --debug` overrides it for one session.
     """
 
     port: int
     upstream_base_url: str
     log_path: str
+    log_level: str = "info"
 
 
 @dataclass

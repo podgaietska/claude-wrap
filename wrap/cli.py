@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 
 import typer
 from rich.console import Console
@@ -42,14 +43,20 @@ def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
 
 
 @app.command()
-def claude():
+def claude(
+    debug: bool = typer.Option(False, "--debug", help="Log a line per turn with its tokens, cost and latency."),
+):
     """Launch Claude Code with routing-aware proxying turned on.
 
     Runs the real `claude` CLI as a child process with stdio inherited,
     so the user gets a normal, fully interactive session. The proxy's own
     log output is written to a file (see `wrap logs`) rather than this
     terminal, so it doesn't interleave with the Claude Code UI; the proxy
-    subprocess is always torn down afterward.
+    subprocess is always torn down afterward. Each run gets a session ID
+    that groups its turns in the telemetry database (see `wrap stats`).
+
+    Args:
+        debug: Run the proxy at DEBUG log level for this session.
 
     Raises:
         typer.Exit: With code 1 if `claude` isn't on PATH or the proxy
@@ -67,6 +74,11 @@ def claude():
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(log_path, "w")
 
+    session_id = uuid.uuid4().hex[:12]
+    proxy_env = {**os.environ, "WRAP_SESSION_ID": session_id}
+    if debug:
+        proxy_env["WRAP_LOG_LEVEL"] = "debug"
+
     proxy_proc = subprocess.Popen(
         [
             sys.executable,
@@ -83,6 +95,7 @@ def claude():
         ],
         stdout=log_file,
         stderr=subprocess.STDOUT,
+        env=proxy_env,
     )
 
     try:
@@ -93,7 +106,10 @@ def claude():
         console.print(
             f"[green]wrap[/green] proxy up on {host}:{config.proxy.port} -- "
             f"tiers: small={config.tiers['small'].model}, large={config.tiers['large'].model}\n"
-            f"[dim]Logs: {log_path} -- run `wrap logs` in another terminal to follow them live.[/dim]"
+            f"session: {session_id}\n"
+            f"[dim]Logs: {log_path} -- run `wrap logs` in another terminal to follow them live"
+            f"{'' if debug else ' (start with --debug for per-turn costs)'}. "
+            f"Run `wrap stats` afterwards for this session's costs.[/dim]"
         )
 
         env = os.environ.copy()

@@ -65,6 +65,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         A configured `FastAPI` app.
     """
     config = config or load_config()
+    logger.setLevel(_log_level(config))
     turn_logger = _create_turn_logger(config)
 
     @asynccontextmanager
@@ -91,6 +92,21 @@ def create_app(config: Config | None = None) -> FastAPI:
         return await _forward_unmodified(request, app, full_path, next(app.state.request_ids))
 
     return app
+
+
+def _log_level(config: Config) -> int:
+    """The proxy's log level: `WRAP_LOG_LEVEL` (set by `wrap claude --debug`),
+    else `proxy.log_level` from the config, else INFO.
+
+    Args:
+        config: The loaded config.
+
+    Returns:
+        A `logging` level.
+    """
+    name = os.environ.get("WRAP_LOG_LEVEL") or config.proxy.log_level or "info"
+    level = logging.getLevelName(name.upper())
+    return level if isinstance(level, int) else logging.INFO
 
 
 def _create_turn_logger(config: Config) -> TurnLogger | None:

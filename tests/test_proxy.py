@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -339,6 +340,21 @@ def test_effort_400_is_learned_and_retried_without_effort():
     assert "output_config" not in bodies[2]  # later request uses the learned capability, no extra 400
 
 
+@pytest.fixture
+def proxy_log(caplog):
+    proxy_logger = logging.getLogger("wrap.proxy")
+    proxy_logger.addHandler(caplog.handler)
+    yield caplog
+    proxy_logger.removeHandler(caplog.handler)
+    proxy_logger.setLevel(logging.INFO)
+
+
+def debug_lines(caplog, kind: str) -> list[str]:
+    """Telemetry DEBUG lines of one kind ("turn" or "switch"), e.g. "[dim]#2 turn small/haiku ..."."""
+    pattern = re.compile(rf"^\[dim\]#\d+ {kind} ")
+    return [r.getMessage() for r in caplog.records if pattern.match(r.getMessage())]
+
+
 USAGE_BODY = {
     "id": "msg_1",
     "model": "small-model",
@@ -517,22 +533,19 @@ def test_failing_telemetry_never_breaks_the_response(tmp_path, monkeypatch, stre
 
 
 @respx.mock
-def test_turn_line_is_hidden_at_info_but_the_row_is_written(tmp_path, caplog):
+def test_turn_line_is_hidden_at_info_but_the_row_is_written(tmp_path, monkeypatch, proxy_log):
+    monkeypatch.delenv("WRAP_LOG_LEVEL", raising=False)
     respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
-    proxy_logger = logging.getLogger("wrap.proxy")
-    proxy_logger.addHandler(caplog.handler)
-    try:
-        with TestClient(create_app(make_config(tmp_path))) as client:
-            client.post(
-                "/v1/messages",
-                headers=HEADERS,
-                json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
-            )
-    finally:
-        proxy_logger.removeHandler(caplog.handler)
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
 
     assert len(logged_turns(tmp_path)) == 1
-    assert not any(" turn " in record.getMessage() for record in caplog.records)
+    assert debug_lines(proxy_log, "turn") == []
 
 
 def test_thread_key_is_stable_across_a_conversation():
@@ -551,3 +564,43 @@ def test_thread_key_is_stable_across_a_conversation():
 
     assert turn_1 == turn_2
     assert turn_1 != other
+
+
+@respx.mock
+def test_debug_level_logs_turn_and_switch_lines(tmp_path, monkeypatch, proxy_log):
+    monkeypatch.setenv("WRAP_LOG_LEVEL", "debug")
+    respx.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=[
+            httpx.Response(200, json={**USAGE_BODY, "model": "large-model"}),
+            httpx.Response(200, json={**USAGE_BODY, "model": "small-model"}),
+        ]
+    )
+    first = {"role": "user", "content": "hi"}
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post("/v1/messages", headers=HEADERS, json={"model": "large-model", "max_tokens": 100, "messages": TOOL_RESULT_TURN})
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "large-model", "max_tokens": 100, "messages": [*TOOL_RESULT_TURN, {"role": "assistant", "content": "ok"}, first]},
+        )
+
+    turns = debug_lines(proxy_log, "turn")
+    assert len(turns) == 2
+    assert "unrouted/large" in turns[0]
+    assert "in=100 out=200 cache_r=1.0k" in turns[1]
+    [switch] = debug_lines(proxy_log, "switch")
+    assert "large→small" in switch
+
+
+@respx.mock
+def test_config_log_level_applies_without_the_env_override(tmp_path, monkeypatch, proxy_log):
+    monkeypatch.delenv("WRAP_LOG_LEVEL", raising=False)
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
+    config = make_config(tmp_path)
+    config.proxy.log_level = "debug"
+
+    with TestClient(create_app(config)) as client:
+        client.post("/v1/messages", headers=HEADERS, json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]})
+
+    assert len(debug_lines(proxy_log, "turn")) == 1
