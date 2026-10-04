@@ -8,7 +8,7 @@ Claude Code honors the `ANTHROPIC_BASE_URL` environment variable (Anthropic's ow
 
 1. Starts a local HTTP proxy (FastAPI + httpx) that speaks the Anthropic Messages API.
 2. Points a real `claude` process at that proxy via `ANTHROPIC_BASE_URL`, then runs it with your terminal attached — full tool use, file edits, and streaming all work exactly as normal.
-3. On every `POST /v1/messages`, the proxy looks at the newest turn, scores its complexity with a zero-cost heuristic, and rewrites the `model` field before forwarding to the real Anthropic API. Tool-result continuation turns (not fresh questions) pass through unchanged. Every other request/path is relayed as-is.
+3. On every `POST /v1/messages`, the proxy finds the question that started the current turn, scores its complexity with a zero-cost heuristic, and rewrites the `model` field before forwarding to the real Anthropic API. Every request in a turn, tool-result continuations included, goes to the same model; requests with no typed question keep the model Claude Code asked for. Every other request/path is relayed as-is.
 
 Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's nothing global to undo — just exit the session.
 
