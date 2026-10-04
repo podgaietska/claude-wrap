@@ -62,9 +62,11 @@ class TurnRecord:
         model_id: The model the proxy sent upstream.
         served_model: The model the response says answered, or None if
             the response didn't say.
-        tier: "small", "large", or "unchanged" for a tool continuation.
-        complexity_score: The classifier's score, None for continuations.
-        was_tool_continuation: True if the turn wasn't reclassified.
+        tier: "small" or "large", or "unrouted" for a request with no
+            human question to route by (sent to the requested model).
+        complexity_score: The classifier's score, None if unrouted.
+        was_tool_continuation: True for a mid-turn request (e.g. sending
+            back tool results), routed by its turn's question.
         stream: True for a streamed response.
         status_code: The upstream HTTP status.
         stop_reason: The response's stop reason.

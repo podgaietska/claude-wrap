@@ -69,12 +69,13 @@ def test_switch_to_haiku_with_large_cached_prompt_loses_money():
     assert economics.recached_tokens == 150_000
 
 
-def test_tool_continuation_back_to_requested_model_carries_a_penalty():
+def test_switching_back_to_the_requested_model_carries_a_penalty():
     turns = [
         turn(OPUS, 145_000, 5_000, seconds=0),
         turn(HAIKU, 0, 152_000, seconds=60),
-        # Opus still has its 150k from the first turn, but has to write the
-        # 2k the Haiku turn added to the conversation as well as the new 1k.
+        # Back on Opus for the next question: it still has its 150k from the
+        # first turn, but has to write the 2k the Haiku turn added to the
+        # conversation as well as the new 1k.
         turn(OPUS, 150_000, 3_000, seconds=90),
     ]
 
