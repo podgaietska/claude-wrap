@@ -16,8 +16,9 @@ Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's n
 
 **Phase A (routing-only passthrough proxy) is built and verified** against the real Claude Code CLI and Anthropic API — see `wrap/proxy/server.py` and `wrap/routing/`.
 
+**Phase B (per-turn cost/latency telemetry in SQLite, `wrap stats`) is built** — see `wrap/telemetry/`. Not yet verified end-to-end against the real API.
+
 Not yet built:
-- **Phase B** — cost/latency telemetry logged to SQLite.
 - **Phase C** — semantic response caching.
 - **Phase D** — a local dashboard (`wrap dashboard`) visualizing cost/latency/cache-hit stats.
 
@@ -35,7 +36,18 @@ pip install -e ".[dev]"
 wrap claude
 ```
 
-This starts the proxy on `127.0.0.1:8787` (configurable in `config/config.yaml`) and launches Claude Code through it. Routing decisions are logged to stderr as they happen.
+This starts the proxy on `127.0.0.1:8787` (configurable in `config/config.yaml`) and launches Claude Code through it. The banner prints a session ID.
+
+```bash
+wrap logs                  # in another terminal: follow routing decisions live
+wrap claude --debug        # also log each turn's tokens, cost and latency (or set proxy.log_level: debug)
+wrap stats                 # after (or during) a session: tokens and cost per tier, plus routing savings
+wrap stats --session all   # or a session ID from the banner
+```
+
+Every turn is recorded in `data/wrap.db` (`turn_log` table) whatever the log level, priced with `config/pricing.yaml`.
+
+`wrap stats` reports **net** routing savings: what the session would have cost had every turn stayed on the model Claude Code asked for, minus what it cost. Prompt caches belong to one model, so switching a long conversation to a cheaper model makes that model write the whole prompt to its cache again — which can cost more than the cheaper model saves. The savings are split into "saved by cheaper models" and "lost to cache misses" so you can see which way it went. It assumes the requested model would have produced the same output in the same number of turns.
 
 ## Configuration
 
