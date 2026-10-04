@@ -62,9 +62,6 @@ def claude(
     subprocess is always torn down afterward. Each run gets a session ID
     that groups its turns in the telemetry database (see `wrap stats`).
 
-    Args:
-        debug: Run the proxy at DEBUG log level for this session.
-
     Raises:
         typer.Exit: With code 1 if `claude` isn't on PATH or the proxy
             doesn't come up in time; otherwise with `claude`'s exit code
@@ -153,11 +150,7 @@ def logs():
 def stats(
     session: str = typer.Option("last", "--session", help="`last`, `all`, or a session ID from the `wrap claude` banner."),
 ):
-    """Show token usage, cost and routing savings for a `wrap claude` session.
-
-    Args:
-        session: Which turns to summarize.
-    """
+    """Show token usage, cost and routing savings for a `wrap claude` session."""
     config = load_config()
     db_path = REPO_ROOT / config.telemetry.db_path
     if not db_path.exists():
