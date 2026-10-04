@@ -1,6 +1,9 @@
 import json
+import logging
+from pathlib import Path
 
 import httpx
+import pytest
 import respx
 from fastapi.testclient import TestClient
 
@@ -14,14 +17,31 @@ from wrap.config import (
     TierConfig,
 )
 from wrap.proxy.server import create_app
+from wrap.telemetry import db
+from wrap.telemetry.logger import thread_key
 
 HEADERS = {"x-api-key": "test", "anthropic-version": "2023-06-01"}
 TOOL_RESULT_TURN = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "output"}]}]
+STREAM = (Path(__file__).parent / "fixtures" / "messages_response_stream.txt").read_bytes()
+TEST_PRICING = """
+models:
+  small-model: {input: 1.0, output: 5.0, cache_read: 0.1, cache_write_5m: 1.25, cache_write_1h: 2.0}
+  large-model: {input: 2.0, output: 10.0, cache_read: 0.2, cache_write_5m: 2.5, cache_write_1h: 4.0}
+"""
 
 
-def make_config() -> Config:
+def make_config(tmp_path: Path | None = None) -> Config:
     """Builds a minimal `Config` fixture pointing at the real Anthropic
-    upstream URL (mocked per-test via `respx`)."""
+    upstream URL (mocked per-test via `respx`).
+
+    Telemetry is on only when `tmp_path` is given, writing to a database
+    there, so tests never touch `data/wrap.db`.
+    """
+    if tmp_path is not None:
+        (tmp_path / "pricing.yaml").write_text(TEST_PRICING)
+        telemetry = TelemetryConfig(db_path=str(tmp_path / "wrap.db"), pricing_file=str(tmp_path / "pricing.yaml"))
+    else:
+        telemetry = TelemetryConfig(db_path="data/wrap.db", pricing_file="config/pricing.yaml", enabled=False)
     return Config(
         tiers={"small": TierConfig(model="small-model"), "large": TierConfig(model="large-model")},
         models={
@@ -32,8 +52,16 @@ def make_config() -> Config:
         routing=RoutingConfig(strategy="heuristic", complexity_threshold=0.5),
         cache=CacheConfig(enabled=False, similarity_threshold=0.92, embedding_model="x"),
         proxy=ProxyConfig(port=8787, upstream_base_url="https://api.anthropic.com", log_path="data/proxy.log"),
-        telemetry=TelemetryConfig(db_path="data/wrap.db", pricing_file="config/pricing.yaml"),
+        telemetry=telemetry,
     )
+
+
+def logged_turns(tmp_path: Path) -> list[db.TurnRecord]:
+    conn = db.connect(tmp_path / "wrap.db")
+    try:
+        return db.fetch_turns(conn, all_sessions=True)
+    finally:
+        conn.close()
 
 
 @respx.mock
@@ -309,3 +337,217 @@ def test_effort_400_is_learned_and_retried_without_effort():
     assert "output_config" in bodies[0]
     assert "output_config" not in bodies[1]  # retry
     assert "output_config" not in bodies[2]  # later request uses the learned capability, no extra 400
+
+
+USAGE_BODY = {
+    "id": "msg_1",
+    "model": "small-model",
+    "stop_reason": "end_turn",
+    "usage": {"input_tokens": 100, "output_tokens": 200, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0},
+}
+
+
+@respx.mock
+def test_streamed_response_is_relayed_byte_for_byte_and_logged(tmp_path):
+    respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, content=STREAM, headers={"content-type": "text/event-stream"})
+    )
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        response = client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "requested-model", "max_tokens": 100, "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.content == STREAM
+    [turn] = logged_turns(tmp_path)
+    assert turn.stream
+    assert turn.tier == "small"
+    assert turn.requested_model == "requested-model"
+    assert turn.model_id == "small-model"
+    assert turn.served_model == "claude-haiku-4-5-20251001"
+    assert turn.usage.output_tokens == 340
+    assert turn.usage.cache_read_tokens == 8000
+    assert turn.stop_reason == "end_turn"
+    assert turn.error is None
+    assert turn.latency_ms >= turn.ttfb_ms >= 0
+
+
+@respx.mock
+def test_non_streamed_response_is_logged_with_cost(tmp_path):
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "requested-model", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    [turn] = logged_turns(tmp_path)
+    assert not turn.stream
+    assert turn.status_code == 200
+    assert turn.usage.input_tokens == 100
+    assert turn.cost_usd == pytest.approx((100 * 1.0 + 200 * 5.0 + 1000 * 0.1) / 1_000_000)
+
+
+@respx.mock
+def test_upstream_error_is_logged(tmp_path):
+    error = {"type": "error", "error": {"type": "api_error", "message": "boom"}}
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(500, json=error))
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        response = client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 500
+    [turn] = logged_turns(tmp_path)
+    assert turn.status_code == 500
+    assert "boom" in turn.error
+    assert turn.cost_usd is None
+
+
+@respx.mock
+def test_retried_max_tokens_400_logs_only_the_retry(tmp_path):
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": "max_tokens: 4096 > 2048, ..."}}
+    respx.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=[httpx.Response(400, json=error), httpx.Response(200, json=USAGE_BODY)]
+    )
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 128000, "messages": [{"role": "user", "content": "what is python?"}]},
+        )
+
+    [turn] = logged_turns(tmp_path)
+    assert turn.status_code == 200
+
+
+@respx.mock
+def test_mid_turn_request_is_logged_as_a_continuation_of_its_question(tmp_path):
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
+    messages = [
+        {"role": "user", "content": "what is python?"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "1", "name": "Read", "input": {}}]},
+        *TOOL_RESULT_TURN,
+    ]
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post("/v1/messages", headers=HEADERS, json={"model": "large-model", "max_tokens": 100, "messages": messages})
+
+    [turn] = logged_turns(tmp_path)
+    assert turn.was_tool_continuation
+    assert turn.tier == "small"
+    assert turn.complexity_score is not None
+
+
+@respx.mock
+def test_request_without_a_question_is_logged_as_unrouted(tmp_path):
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post("/v1/messages", headers=HEADERS, json={"model": "large-model", "max_tokens": 100, "messages": TOOL_RESULT_TURN})
+
+    [turn] = logged_turns(tmp_path)
+    assert turn.tier == "unrouted"
+    assert turn.model_id == "large-model"
+    assert turn.complexity_score is None
+
+
+@respx.mock
+def test_passthrough_endpoint_is_not_logged(tmp_path):
+    respx.post("https://api.anthropic.com/v1/messages/count_tokens").mock(
+        return_value=httpx.Response(200, json={"input_tokens": 5})
+    )
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post("/v1/messages/count_tokens", headers=HEADERS, json={"model": "x", "messages": []})
+
+    assert logged_turns(tmp_path) == []
+
+
+@respx.mock
+def test_session_id_comes_from_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("WRAP_SESSION_ID", "abc123")
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    [turn] = logged_turns(tmp_path)
+    assert turn.session_id == "abc123"
+
+
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+def test_failing_telemetry_never_breaks_the_response(tmp_path, monkeypatch, stream):
+    def broken_insert(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(db, "insert_turn", broken_insert)
+    upstream = (
+        httpx.Response(200, content=STREAM, headers={"content-type": "text/event-stream"})
+        if stream
+        else httpx.Response(200, json=USAGE_BODY)
+    )
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=upstream)
+
+    with TestClient(create_app(make_config(tmp_path))) as client:
+        response = client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 100, "stream": stream, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 200
+    if stream:
+        assert response.content == STREAM
+    else:
+        assert response.json() == USAGE_BODY
+
+
+@respx.mock
+def test_turn_line_is_hidden_at_info_but_the_row_is_written(tmp_path, caplog):
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
+    proxy_logger = logging.getLogger("wrap.proxy")
+    proxy_logger.addHandler(caplog.handler)
+    try:
+        with TestClient(create_app(make_config(tmp_path))) as client:
+            client.post(
+                "/v1/messages",
+                headers=HEADERS,
+                json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+            )
+    finally:
+        proxy_logger.removeHandler(caplog.handler)
+
+    assert len(logged_turns(tmp_path)) == 1
+    assert not any(" turn " in record.getMessage() for record in caplog.records)
+
+
+def test_thread_key_is_stable_across_a_conversation():
+    system = [
+        {"type": "text", "text": "x-anthropic-billing-header: cc_version=1; cch=aaaa"},
+        {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
+    ]
+    first = {"role": "user", "content": [{"type": "text", "text": "fix the bug", "cache_control": {"type": "ephemeral"}}]}
+    later_system = [{**system[0], "text": "x-anthropic-billing-header: cc_version=1; cch=bbbb"}, {**system[1]}]
+    later_system[1].pop("cache_control")
+    later_first = {"role": "user", "content": [{"type": "text", "text": "fix the bug"}]}
+
+    turn_1 = thread_key({"system": system, "messages": [first]})
+    turn_2 = thread_key({"system": later_system, "messages": [later_first, {"role": "assistant", "content": "ok"}]})
+    other = thread_key({"system": system, "messages": [{"role": "user", "content": "generate a title"}]})
+
+    assert turn_1 == turn_2
+    assert turn_1 != other

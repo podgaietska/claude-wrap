@@ -54,5 +54,6 @@ proxy:
   log_path: data/proxy.log
 
 telemetry:
+  enabled: true
   db_path: data/wrap.db
   pricing_file: config/pricing.yaml
