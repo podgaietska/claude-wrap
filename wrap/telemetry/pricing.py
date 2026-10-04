@@ -31,6 +31,31 @@ class ModelPricing:
     cache_write_5m: float
     cache_write_1h: float
 
+    def cost(self, usage: Usage) -> float:
+        """Prices token counts at these rates.
+
+        Cache writes are priced with the 5m/1h split when the API reported
+        it; otherwise all of `cache_creation_tokens` is priced at the 5m rate.
+
+        Args:
+            usage: The token counts to price.
+
+        Returns:
+            The cost in US dollars.
+        """
+        write_5m = usage.cache_creation_5m_tokens
+        write_1h = usage.cache_creation_1h_tokens
+        if write_5m + write_1h == 0:
+            write_5m = usage.cache_creation_tokens
+
+        return (
+            usage.input_tokens * self.input
+            + usage.output_tokens * self.output
+            + usage.cache_read_tokens * self.cache_read
+            + write_5m * self.cache_write_5m
+            + write_1h * self.cache_write_1h
+        ) / _PER_MILLION
+
 
 class PricingTable:
     """Maps model IDs to `ModelPricing` and prices `Usage` with it."""
@@ -78,10 +103,7 @@ class PricingTable:
         return self.models[max(prefixes, key=len)] if prefixes else None
 
     def cost(self, model: str | None, usage: Usage) -> float | None:
-        """Prices one turn's usage.
-
-        Cache writes are priced with the 5m/1h split when the API reported
-        it; otherwise all of `cache_creation_tokens` is priced at the 5m rate.
+        """Prices one turn's usage at its model's rates (see `ModelPricing.cost`).
 
         Args:
             model: The model that served the turn.
@@ -97,16 +119,4 @@ class PricingTable:
                 self._warned.add(model)
                 logger.warning("[yellow]no pricing for %s -- add it to the pricing file[/yellow]", model)
             return None
-
-        write_5m = usage.cache_creation_5m_tokens
-        write_1h = usage.cache_creation_1h_tokens
-        if write_5m + write_1h == 0:
-            write_5m = usage.cache_creation_tokens
-
-        return (
-            usage.input_tokens * rates.input
-            + usage.output_tokens * rates.output
-            + usage.cache_read_tokens * rates.cache_read
-            + write_5m * rates.cache_write_5m
-            + write_1h * rates.cache_write_1h
-        ) / _PER_MILLION
+        return rates.cost(usage)
