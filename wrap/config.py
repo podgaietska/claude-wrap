@@ -107,25 +107,32 @@ class ProxyConfig:
             is written to, so it doesn't interleave with the wrapped
             Claude Code session's own terminal output. Read live with
             `wrap logs`.
+        log_level: "info" logs each routing decision; "debug" adds a
+            line per turn with its tokens, cost and latency. `wrap claude
+            --debug` overrides it for one session.
     """
 
     port: int
     upstream_base_url: str
     log_path: str
+    log_level: str = "info"
 
 
 @dataclass
 class TelemetryConfig:
-    """Settings for cost/latency logging (not yet implemented).
+    """Settings for per-turn cost/latency logging.
 
     Attributes:
-        db_path: Path to the SQLite database file used for telemetry.
-        pricing_file: Path to the YAML file mapping model IDs to
-            per-token pricing.
+        db_path: Path (relative to the repo root) to the SQLite database
+            file used for telemetry. Read with `wrap stats`.
+        pricing_file: Path (relative to the repo root) to the YAML file
+            mapping model IDs to per-token pricing.
+        enabled: Whether the proxy records turns.
     """
 
     db_path: str
     pricing_file: str
+    enabled: bool = True
 
 
 @dataclass

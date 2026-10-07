@@ -8,7 +8,7 @@ Claude Code honors the `ANTHROPIC_BASE_URL` environment variable (Anthropic's ow
 
 1. Starts a local HTTP proxy (FastAPI + httpx) that speaks the Anthropic Messages API.
 2. Points a real `claude` process at that proxy via `ANTHROPIC_BASE_URL`, then runs it with your terminal attached — full tool use, file edits, and streaming all work exactly as normal.
-3. On every `POST /v1/messages`, the proxy looks at the newest turn, scores its complexity with a zero-cost heuristic, and rewrites the `model` field before forwarding to the real Anthropic API. Tool-result continuation turns (not fresh questions) pass through unchanged. Every other request/path is relayed as-is.
+3. On every `POST /v1/messages`, the proxy finds the question that started the current turn, scores its complexity with a zero-cost heuristic, and rewrites the `model` field before forwarding to the real Anthropic API. Every request in a turn, tool-result continuations included, goes to the same model; requests with no typed question keep the model Claude Code asked for. Every other request/path is relayed as-is.
 
 Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's nothing global to undo — just exit the session.
 
@@ -16,8 +16,9 @@ Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's n
 
 **Phase A (routing-only passthrough proxy) is built and verified** against the real Claude Code CLI and Anthropic API — see `wrap/proxy/server.py` and `wrap/routing/`.
 
+**Phase B (per-turn cost/latency telemetry in SQLite, `wrap stats`) is built** — see `wrap/telemetry/`. Not yet verified end-to-end against the real API.
+
 Not yet built:
-- **Phase B** — cost/latency telemetry logged to SQLite.
 - **Phase C** — semantic response caching.
 - **Phase D** — a local dashboard (`wrap dashboard`) visualizing cost/latency/cache-hit stats.
 
@@ -35,7 +36,18 @@ pip install -e ".[dev]"
 wrap claude
 ```
 
-This starts the proxy on `127.0.0.1:8787` (configurable in `config/config.yaml`) and launches Claude Code through it. Routing decisions are logged to stderr as they happen.
+This starts the proxy on `127.0.0.1:8787` (configurable in `config/config.yaml`) and launches Claude Code through it. The banner prints a session ID.
+
+```bash
+wrap logs                  # in another terminal: follow routing decisions live
+wrap claude --debug        # also log each turn's tokens, cost and latency (or set proxy.log_level: debug)
+wrap stats                 # after (or during) a session: tokens and cost per tier, plus routing savings
+wrap stats --session all   # or a session ID from the banner
+```
+
+Every turn is recorded in `data/wrap.db` (`turn_log` table) whatever the log level, priced with `config/pricing.yaml`.
+
+`wrap stats` reports **net** routing savings: what the session would have cost had every turn stayed on the model Claude Code asked for, minus what it cost. Prompt caches belong to one model, so switching a long conversation to a cheaper model makes that model write the whole prompt to its cache again — which can cost more than the cheaper model saves. The savings are split into "saved by cheaper models" and "lost to cache misses" so you can see which way it went. It assumes the requested model would have produced the same output in the same number of turns.
 
 ## Configuration
 
@@ -94,15 +106,24 @@ To support a new incompatibility: add a capability field, an adapter appended to
 
 ### Logs
 
-`wrap logs` shows one line per request with an id, e.g.:
+`wrap logs` shows one routing line per request, with an id, plus any warnings and errors:
 
 ```
-#3 main msgs=4 tail=[…, system, assistant:text+tool_use, user:tool_result]  routed small → claude-haiku-4-5-20251001 (score 0.01: no strong signals, by turn's question at msg 0)
-#3 adapted for claude-haiku-4-5-20251001: max_tokens 128000→64000; dropped thinking (adaptive unsupported); dropped effort=medium; ...
+#3 small → claude-haiku-4-5-20251001 (score 0.01: no strong signals, by turn's question at msg 0)
+```
+
+Run `wrap claude --debug` (or set `proxy.log_level: debug`) to see each request's details under its routing line:
+
+```
+#3 small → claude-haiku-4-5-20251001 (score 0.01: no strong signals, by turn's question at msg 0)
+#3 request: main msgs=4 tail=[…, system, assistant:text+tool_use, user:tool_result]
+#3 adapted: max_tokens 128000→64000; dropped thinking (adaptive unsupported); dropped effort=medium; ...
 #3 ← 200 in 630ms
+#3 turn in=12 out=340 cache_r=30.0k cache_w=1.2k $0.0081 1840ms
+#3 switch sonnet→haiku: re-cached 1.0k tokens (+$0.0011)
 ```
 
-`main`/`side` distinguishes Claude Code's conversation requests from its small background calls (e.g. session titles). No message content is logged.
+`main`/`side` distinguishes Claude Code's conversation requests from its small background calls (e.g. session titles). `switch` appears when a conversation moves to a different model, with the extra cache-write cost that caused. No message content is logged.
 
 ## Testing
 
