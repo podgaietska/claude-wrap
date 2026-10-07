@@ -19,13 +19,15 @@ def conn(tmp_path):
     connection.close()
 
 
-def add_turn(conn, session_id, tier, model, cache_read, cache_write, seconds, status=200):
+def add_turn(conn, session_id, tier, model, cache_read, cache_write, seconds, status=200, thread="t1",
+             continuation=False):
     usage = Usage(input_tokens=10, output_tokens=500, cache_read_tokens=cache_read,
                   cache_creation_tokens=cache_write, cache_creation_5m_tokens=cache_write)
     db.insert_turn(conn, TurnRecord(
         timestamp=(START + timedelta(seconds=seconds)).isoformat(),
         session_id=session_id,
-        thread_key="t1",
+        thread_key=thread,
+        was_tool_continuation=continuation,
         requested_model=OPUS,
         model_id=model,
         served_model=model,
@@ -51,7 +53,7 @@ def test_last_session_shows_table_and_cache_penalty(conn):
     shown, text = render(conn, "last")
 
     assert shown
-    assert "Session new — 3 turns" in text
+    assert "Session new — 3 requests (3 new messages, 0 tool calls, 0 side requests)" in text
     assert "claude-haiku-4-5-20251001" in text
     assert "1 failed requests" in text
     assert "Routing economics (vs. always claude-opus-5-5)" in text
@@ -66,10 +68,23 @@ def test_all_sessions(conn):
 
     _, text = render(conn, "all")
 
-    assert "All sessions — 2 turns" in text
+    assert "All sessions — 2 requests" in text
 
 
 def test_unknown_session_and_empty_db_show_nothing(conn):
     assert render(conn, "last")[0] is False
     add_turn(conn, "a", "large", OPUS, 0, 1_000, 0)
     assert render(conn, "nope")[0] is False
+
+
+def test_requests_are_broken_down_into_messages_tool_calls_and_side_requests(conn):
+    add_turn(conn, "s", "small", HAIKU, 0, 900, 0, thread="title")
+    add_turn(conn, "s", "small", HAIKU, 0, 150_000, 1)
+    add_turn(conn, "s", "small", HAIKU, 150_000, 500, 2, continuation=True)
+    add_turn(conn, "s", "small", HAIKU, 150_500, 500, 3, continuation=True)
+    add_turn(conn, "s", "large", OPUS, 0, 151_000, 4)
+    add_turn(conn, "s", "unrouted", OPUS, 151_000, 10, 5)
+
+    _, text = render(conn, "last")
+
+    assert "Session s — 6 requests (2 new messages, 2 tool calls, 2 side requests)" in text
