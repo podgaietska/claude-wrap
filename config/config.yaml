@@ -44,9 +44,14 @@ routing:
   complexity_threshold: 0.5
 
 cache:
-  enabled: false # Phase C
+  enabled: false
   similarity_threshold: 0.92
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  scope: project # or global: share answers across projects
+  ttl_days: 7
+  max_entries: 5000
+  min_question_chars: 10
+  max_question_chars: 2000
 
 proxy:
   port: 8787

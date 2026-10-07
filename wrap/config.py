@@ -81,18 +81,29 @@ class RoutingConfig:
 
 @dataclass
 class CacheConfig:
-    """Settings for the semantic response cache (not yet implemented).
+    """Settings for the response cache.
 
     Attributes:
         enabled: Whether the cache is active.
-        similarity_threshold: Minimum cosine similarity for a cache hit.
+        similarity_threshold: Minimum cosine similarity for a semantic hit.
         embedding_model: Name of the sentence-transformers model used to
-            embed queries.
+            embed questions.
+        scope: "project" keeps each project's answers apart (keyed by the
+            directory `wrap claude` runs in); "global" shares them.
+        ttl_days: Entries older than this are never served.
+        max_entries: Past this many entries, the least recently used go first.
+        min_question_chars: Shorter questions aren't cached.
+        max_question_chars: Longer questions aren't cached.
     """
 
     enabled: bool
     similarity_threshold: float
     embedding_model: str
+    scope: str = "project"
+    ttl_days: float = 7
+    max_entries: int = 5000
+    min_question_chars: int = 10
+    max_question_chars: int = 2000
 
 
 @dataclass
@@ -146,7 +157,7 @@ class Config:
             Requests to models missing from this table aren't adapted
             up front (the 400 fallback still applies).
         routing: Complexity classification and routing settings.
-        cache: Semantic cache settings.
+        cache: Response cache settings.
         proxy: Local proxy server settings.
         telemetry: Cost/latency logging settings.
     """
