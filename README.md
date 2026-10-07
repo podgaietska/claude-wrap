@@ -106,15 +106,24 @@ To support a new incompatibility: add a capability field, an adapter appended to
 
 ### Logs
 
-`wrap logs` shows one line per request with an id, e.g.:
+`wrap logs` shows one routing line per request, with an id, plus any warnings and errors:
 
 ```
-#3 main msgs=4 tail=[…, system, assistant:text+tool_use, user:tool_result]  routed small → claude-haiku-4-5-20251001 (score 0.01: no strong signals, by turn's question at msg 0)
-#3 adapted for claude-haiku-4-5-20251001: max_tokens 128000→64000; dropped thinking (adaptive unsupported); dropped effort=medium; ...
+#3 small → claude-haiku-4-5-20251001 (score 0.01: no strong signals, by turn's question at msg 0)
+```
+
+Run `wrap claude --debug` (or set `proxy.log_level: debug`) to see each request's details under its routing line:
+
+```
+#3 small → claude-haiku-4-5-20251001 (score 0.01: no strong signals, by turn's question at msg 0)
+#3 request: main msgs=4 tail=[…, system, assistant:text+tool_use, user:tool_result]
+#3 adapted: max_tokens 128000→64000; dropped thinking (adaptive unsupported); dropped effort=medium; ...
 #3 ← 200 in 630ms
+#3 turn in=12 out=340 cache_r=30.0k cache_w=1.2k $0.0081 1840ms
+#3 switch sonnet→haiku: re-cached 1.0k tokens (+$0.0011)
 ```
 
-`main`/`side` distinguishes Claude Code's conversation requests from its small background calls (e.g. session titles). No message content is logged.
+`main`/`side` distinguishes Claude Code's conversation requests from its small background calls (e.g. session titles). `switch` appears when a conversation moves to a different model, with the extra cache-write cost that caused. No message content is logged.
 
 ## Testing
 

@@ -67,7 +67,7 @@ def describe_decision(decision: RouteDecision) -> str:
         decision: The router's decision for the request.
 
     Returns:
-        E.g. "routed small → claude-haiku-4-5-20251001 (score 0.06: no strong
+        E.g. "small → claude-haiku-4-5-20251001 (score 0.06: no strong
         signals)", noting when the decision follows an earlier question in the turn.
     """
     if not decision.routed:
@@ -75,4 +75,4 @@ def describe_decision(decision: RouteDecision) -> str:
     by_turn = ""
     if decision.turn is not None and decision.turn.is_continuation:
         by_turn = f", by turn's question at msg {decision.turn.index}"
-    return escape(f"routed {decision.tier} → {decision.model} ({decision.reason}{by_turn})")
+    return escape(f"{decision.tier} → {decision.model} ({decision.reason}{by_turn})")

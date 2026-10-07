@@ -96,19 +96,19 @@ class TurnLogger:
             self._conn.close()
 
     def _log(self, record: TurnRecord, tag: str) -> None:
-        label = f"{record.tier}/{_short_model(record.model)}"
+        # The tier and model are already on the request's routing line.
         if record.status_code is None or record.status_code >= 400:
             logger.debug(
-                "[dim]%sturn %s status=%s error=%s %.0fms[/dim]",
-                tag, label, record.status_code, record.error, record.latency_ms or 0,
+                "[dim]%sturn status=%s error=%s %.0fms[/dim]",
+                tag, record.status_code, record.error, record.latency_ms or 0,
             )
             return
 
         u = record.usage
         cost = f"${record.cost_usd:.4f}" if record.cost_usd is not None else "$—"
         logger.debug(
-            "[dim]%sturn %s in=%s out=%s cache_r=%s cache_w=%s %s %.0fms%s[/dim]",
-            tag, label, format_tokens(u.input_tokens), format_tokens(u.output_tokens), format_tokens(u.cache_read_tokens),
+            "[dim]%sturn in=%s out=%s cache_r=%s cache_w=%s %s %.0fms%s[/dim]",
+            tag, format_tokens(u.input_tokens), format_tokens(u.output_tokens), format_tokens(u.cache_read_tokens),
             format_tokens(u.cache_creation_tokens), cost, record.latency_ms or 0,
             f" error={record.error}" if record.error else "",
         )

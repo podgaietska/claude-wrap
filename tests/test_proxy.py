@@ -587,7 +587,7 @@ def test_debug_level_logs_turn_and_switch_lines(tmp_path, monkeypatch, proxy_log
 
     turns = debug_lines(proxy_log, "turn")
     assert len(turns) == 2
-    assert "unrouted/large" in turns[0]
+    assert turns[0].startswith("[dim]#1 turn in=")
     assert "in=100 out=200 cache_r=1.0k" in turns[1]
     [switch] = debug_lines(proxy_log, "switch")
     assert "large→small" in switch
@@ -604,3 +604,29 @@ def test_config_log_level_applies_without_the_env_override(tmp_path, monkeypatch
         client.post("/v1/messages", headers=HEADERS, json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]})
 
     assert len(debug_lines(proxy_log, "turn")) == 1
+
+
+@respx.mock
+@pytest.mark.parametrize("level", ["info", "debug"])
+def test_info_logs_one_routing_line_per_request_and_debug_adds_detail(monkeypatch, proxy_log, level):
+    monkeypatch.setenv("WRAP_LOG_LEVEL", level)
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json={"id": "msg_1"}))
+    respx.post("https://api.anthropic.com/v1/messages/count_tokens").mock(
+        return_value=httpx.Response(200, json={"input_tokens": 5})
+    )
+
+    with TestClient(create_app(make_config())) as client:
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 128000, "messages": [{"role": "user", "content": "what is python?"}]},
+        )
+        client.post("/v1/messages/count_tokens", headers=HEADERS, json={"model": "x", "messages": []})
+
+    messages = [r.getMessage() for r in proxy_log.records]
+    assert messages[0].startswith("#1 small → small-model (score")
+    details = ["#1 request: side", "#1 adapted: max_tokens 128000→4096", "#1 ← 200", "#2 passthrough POST /v1/messages/count_tokens"]
+    for detail in details:
+        assert any(detail in m for m in messages) == (level == "debug"), detail
+    if level == "info":
+        assert len(messages) == 1

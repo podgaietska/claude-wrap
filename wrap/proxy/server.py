@@ -162,7 +162,8 @@ async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Respo
     t0 = time.monotonic()
     requested_model = body.get("model", "")
     decision = router.route(body.get("messages", []), requested_model)
-    logger.info("#%d %s  %s", req_id, describe_request(body), describe_decision(decision))
+    logger.info("#%d %s", req_id, describe_decision(decision))
+    logger.debug("[dim]#%d request: %s[/dim]", req_id, describe_request(body))
     body["model"] = model = decision.model
     _adapt(body, model, capabilities, req_id)
     turn = _TurnContext(
@@ -335,7 +336,7 @@ def _adapt(body: dict, model: str, capabilities: CapabilityRegistry, req_id: int
     """
     notes = adapt_request(body, capabilities.get(model))
     if notes:
-        logger.info("[dim]#%d adapted for %s: %s[/dim]", req_id, model, escape("; ".join(notes)))
+        logger.debug("[dim]#%d adapted: %s[/dim]", req_id, escape("; ".join(notes)))
 
 
 async def _send(
@@ -358,7 +359,7 @@ async def _send(
     request = client.build_request("POST", url, headers=headers, content=json.dumps(body).encode())
     response = await client.send(request, stream=True)
     ttfb_ms = (time.monotonic() - start) * 1000
-    logger.info("[dim]#%d ← %s in %.0fms[/dim]", req_id, response.status_code, ttfb_ms)
+    logger.debug("[dim]#%d ← %s in %.0fms[/dim]", req_id, response.status_code, ttfb_ms)
     return response, ttfb_ms
 
 
@@ -415,7 +416,7 @@ async def _forward_unmodified(
     upstream_request = client.build_request(request.method, url, headers=headers, content=body)
     upstream_response = await client.send(upstream_request, stream=True)
     latency_ms = (time.monotonic() - start) * 1000
-    logger.info(
+    logger.debug(
         "[dim]#%d passthrough %s /%s ← %s in %.0fms[/dim]",
         req_id, request.method, escape(full_path), upstream_response.status_code, latency_ms,
     )
