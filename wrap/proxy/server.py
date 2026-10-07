@@ -19,9 +19,12 @@ from rich.markup import escape
 from wrap.adapt.adapters import adapt_request
 from wrap.adapt.error_rules import match_error
 from wrap.adapt.registry import CapabilityRegistry
+from wrap.cache.cache import Lookup, ResponseCache, estimate_request_tokens
+from wrap.cache.store import CacheStore
 from wrap.config import REPO_ROOT, Config, load_config
+from wrap.proxy.cache_response import build_message, json_response, streaming_response
 from wrap.proxy.describe import describe_decision, describe_request
-from wrap.proxy.sse import StreamUsageParser, parse_message_body
+from wrap.proxy.sse import StreamUsageParser, parse_message, parse_message_body
 from wrap.proxy.upstream import filtered_headers, upstream_request_headers
 from wrap.routing.router import RouteDecision, Router
 from wrap.telemetry.db import TurnRecord
@@ -53,6 +56,7 @@ class _TurnContext:
     model: str
     stream: bool
     ttfb_ms: float | None = None
+    lookup: Lookup | None = None
 
 
 def create_app(config: Config | None = None) -> FastAPI:
@@ -67,6 +71,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     config = config or load_config()
     logger.setLevel(_log_level(config))
     turn_logger = _create_turn_logger(config)
+    cache = _create_cache(config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -75,6 +80,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         await app.state.http_client.aclose()
         if turn_logger is not None:
             turn_logger.close()
+        if cache is not None:
+            cache.close()
 
     app = FastAPI(lifespan=lifespan)
     app.state.config = config
@@ -82,6 +89,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.capabilities = CapabilityRegistry(config.models)
     app.state.request_ids = itertools.count(1)
     app.state.turn_logger = turn_logger
+    app.state.cache = cache
 
     @app.post("/v1/messages")
     async def messages(request: Request):
@@ -132,12 +140,39 @@ def _create_turn_logger(config: Config) -> TurnLogger | None:
         return None
 
 
+def _create_cache(config: Config) -> ResponseCache | None:
+    """Builds the response cache, or None if it's off or can't start.
+
+    Entries are kept per project, from `WRAP_PROJECT_DIR` (set by
+    `wrap claude`). A broken database disables the cache with a warning
+    rather than stopping the proxy.
+
+    Args:
+        config: The loaded config.
+
+    Returns:
+        A `ResponseCache`, or None.
+    """
+    if not config.cache.enabled:
+        return None
+    try:
+        store = CacheStore(REPO_ROOT / config.telemetry.db_path, config.cache.ttl_days, config.cache.max_entries)
+        return ResponseCache(config.cache, store, os.environ.get("WRAP_PROJECT_DIR"))
+    except Exception as exc:
+        logger.warning("[yellow]cache disabled: %s[/yellow]", exc)
+        return None
+
+
 async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Response:
     """Routes a request, adapts it to the chosen model, then forwards upstream.
 
     If the API rejects the request with an error a known rule explains (the
     configured capabilities were stale), the correction is learned for the
     session, the request is re-adapted, and it's retried once.
+
+    With the cache on, an eligible request whose question was answered
+    before is served from the cache with no upstream call; an eligible miss
+    is forwarded as usual and its answer stored once fully relayed.
 
     Args:
         request: Incoming request from the client (Claude Code).
@@ -164,6 +199,7 @@ async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Respo
     decision = router.route(body.get("messages", []), requested_model)
     logger.info("#%d %s", req_id, describe_decision(decision))
     logger.debug("[dim]#%d request: %s[/dim]", req_id, describe_request(body))
+    lookup = _cache_lookup(app, body, decision, req_id)
     body["model"] = model = decision.model
     _adapt(body, model, capabilities, req_id)
     turn = _TurnContext(
@@ -175,7 +211,12 @@ async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Respo
         decision=decision,
         model=model,
         stream=bool(body.get("stream")),
+        lookup=lookup,
     )
+    if lookup is not None and lookup.hit:
+        response = _serve_from_cache(app, turn, body)
+        if response is not None:
+            return response
 
     url = f"{config.proxy.upstream_base_url}/v1/messages"
     if request.url.query:
@@ -214,11 +255,15 @@ async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Respo
     status_code = upstream_response.status_code
     response_headers = filtered_headers(dict(upstream_response.headers))
     if turn.stream:
-        parser = StreamUsageParser()
+        parser = StreamUsageParser(collect_content=bool(lookup and lookup.eligible))
 
         def on_stream_done(interrupted: str | None) -> None:
             error = interrupted or parser.error or (None if parser.completed else "stream_incomplete")
-            _record(app, turn, status_code, parser.usage, parser.served_model, parser.stop_reason, error)
+            entry_id = None if error else _cache_insert(app, turn, parser.message, parser.usage)
+            _record(
+                app, turn, status_code, parser.usage, parser.served_model, parser.stop_reason, error,
+                cache_entry_id=entry_id,
+            )
 
         return StreamingResponse(
             _tee(upstream_response, parser, on_stream_done),
@@ -230,8 +275,98 @@ async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Respo
     content = await upstream_response.aread()
     await upstream_response.aclose()
     usage, served_model, stop_reason = parse_message_body(content)
-    _record(app, turn, status_code, usage, served_model, stop_reason, None)
+    entry_id = _cache_insert(app, turn, parse_message(content), usage)
+    _record(app, turn, status_code, usage, served_model, stop_reason, None, cache_entry_id=entry_id)
     return Response(content=content, status_code=status_code, headers=response_headers)
+
+
+def _cache_lookup(app: FastAPI, body: dict, decision: RouteDecision, req_id: int) -> Lookup | None:
+    """Looks a request up in the cache, if there is one; never raises.
+
+    Args:
+        app: The FastAPI app, holding the `ResponseCache`.
+        body: The request body, before it's adapted.
+        decision: The router's decision for it.
+        req_id: Id used to tie this request's log lines together.
+
+    Returns:
+        The `Lookup`, or None if the cache is off or the lookup failed
+        (the request is then forwarded as if the cache were off).
+    """
+    cache: ResponseCache | None = app.state.cache
+    if cache is None:
+        return None
+    try:
+        lookup = cache.lookup(body, decision)
+    except Exception as exc:
+        logger.warning("[yellow]#%d cache lookup failed: %s[/yellow]", req_id, escape(str(exc)))
+        return None
+    if not lookup.eligible:
+        logger.debug("[dim]#%d cache skip (%s)[/dim]", req_id, lookup.reason)
+    elif not lookup.hit:
+        logger.debug("[dim]#%d cache miss (%s)[/dim]", req_id, lookup.miss_reason)
+    return lookup
+
+
+def _serve_from_cache(app: FastAPI, turn: _TurnContext, body: dict) -> Response | None:
+    """Answers a request from its cache hit, with no upstream call.
+
+    Args:
+        app: The FastAPI app.
+        turn: The request, whose `lookup` holds the entry to serve.
+        body: The request body, to estimate its input tokens.
+
+    Returns:
+        A JSON or streamed reply, or None if the entry couldn't be turned
+        into one (the request is then forwarded as usual).
+    """
+    entry = turn.lookup.entry
+    try:
+        message = build_message(
+            entry.content, entry.served_model or turn.model, estimate_request_tokens(body), entry.output_tokens
+        )
+    except Exception as exc:
+        logger.warning("[yellow]#%d cache entry %s unusable: %s[/yellow]", turn.req_id, entry.id, escape(str(exc)))
+        turn.lookup = None
+        return None
+
+    latency_ms = (time.monotonic() - turn.t0) * 1000
+    logger.info(
+        "#%d cache hit (exact, entry %d) → served %s answer in %.0fms",
+        turn.req_id, entry.id, escape(message["model"]), latency_ms,
+    )
+    _record(app, turn, 200, Usage(), message["model"], "end_turn", None, cache_entry_id=entry.id)
+    return streaming_response(message) if turn.stream else json_response(message)
+
+
+def _cache_insert(app: FastAPI, turn: _TurnContext, message: dict | None, usage: Usage) -> int | None:
+    """Stores a successful answer to an eligible request that missed; never raises.
+
+    Args:
+        app: The FastAPI app, holding the cache and the pricing.
+        turn: The request.
+        message: The full response message, or None if it couldn't be assembled.
+        usage: The response's token counts, to price the entry.
+
+    Returns:
+        The new entry's ID, or None if nothing was stored.
+    """
+    cache: ResponseCache | None = app.state.cache
+    if cache is None or turn.lookup is None or not turn.lookup.eligible or turn.lookup.hit:
+        return None
+    try:
+        turn_logger: TurnLogger | None = app.state.turn_logger
+        model = (message or {}).get("model") or turn.model
+        cost = turn_logger.pricing.cost(model, usage) if turn_logger is not None else None
+        entry_id = cache.insert(turn.lookup, message, cost)
+    except Exception as exc:
+        logger.warning("[yellow]#%d cache insert failed: %s[/yellow]", turn.req_id, escape(str(exc)))
+        return None
+    if entry_id is None:
+        logger.debug("[dim]#%d cache: answer not storable[/dim]", turn.req_id)
+    else:
+        logger.debug("[dim]#%d cache stored entry %d[/dim]", turn.req_id, entry_id)
+    return entry_id
 
 
 async def _tee(
@@ -270,6 +405,7 @@ def _record(
     served_model: str | None,
     stop_reason: str | None,
     error: str | None,
+    cache_entry_id: int | None = None,
 ) -> None:
     """Hands a finished request to the telemetry logger, if there is one; never raises.
 
@@ -285,12 +421,14 @@ def _record(
         served_model: The model the response says answered.
         stop_reason: The response's stop reason.
         error: Error type and message, or why a stream ended early.
+        cache_entry_id: The cache entry served or written, if any.
     """
     turn_logger: TurnLogger | None = app.state.turn_logger
     if turn_logger is None:
         return
     try:
         decision = turn.decision
+        lookup = turn.lookup
         turn_logger.record(
             TurnRecord(
                 timestamp=turn.started_at.isoformat(),
@@ -308,6 +446,11 @@ def _record(
                 ttfb_ms=turn.ttfb_ms,
                 latency_ms=(time.monotonic() - turn.t0) * 1000,
                 error=error,
+                cache_hit=bool(lookup and lookup.hit),
+                similarity_score=lookup.similarity if lookup else None,
+                cache_eligible=bool(lookup and lookup.eligible),
+                cache_entry_id=cache_entry_id,
+                cache_miss_reason=lookup.miss_reason if lookup else None,
             ),
             req_id=turn.req_id,
         )

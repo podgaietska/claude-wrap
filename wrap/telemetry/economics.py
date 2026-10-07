@@ -257,6 +257,9 @@ def analyze(turns: list[TurnRecord], pricing: PricingTable) -> Economics:
     result = Economics()
     for thread in threads.values():
         uses_1h = any(t.usage.cache_creation_1h_tokens > 0 for t in thread)
+        # A cache hit cost nothing and no model served it, so it's neither
+        # a turn to price nor a switch.
+        thread = [t for t in thread if not t.cache_hit]
         succeeded = [t for t in thread if t.status_code is not None and t.status_code < 400]
         result.error_turns += len(thread) - len(succeeded)
         growth = typical_growth([

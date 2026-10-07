@@ -76,16 +76,18 @@ class TurnLogger:
 
         Args:
             record: The turn, without `session_id` or `cost_usd` (both are
-                filled in here).
+                filled in here; a cache hit costs nothing).
             req_id: The proxy's request id, to tie the DEBUG lines to the
                 request's other log lines.
         """
         try:
-            record = dataclasses.replace(
-                record,
-                session_id=self.session_id,
-                cost_usd=self.pricing.cost(record.model, record.usage) if record.status_code and record.status_code < 400 else None,
-            )
+            if record.cache_hit:
+                cost = 0.0
+            elif record.status_code and record.status_code < 400:
+                cost = self.pricing.cost(record.model, record.usage)
+            else:
+                cost = None
+            record = dataclasses.replace(record, session_id=self.session_id, cost_usd=cost)
             with self._lock:
                 db.insert_turn(self._conn, record)
             self._log(record, f"#{req_id} " if req_id is not None else "")
@@ -98,7 +100,10 @@ class TurnLogger:
             self._conn.close()
 
     def _log(self, record: TurnRecord, tag: str) -> None:
-        # The tier and model are already on the request's routing line.
+        # The tier and model are already on the request's routing line, and
+        # a cache hit has its own line; no model served it, so it's no switch.
+        if record.cache_hit:
+            return
         if record.status_code is None or record.status_code >= 400:
             logger.debug(
                 "[dim]%sturn status=%s error=%s %.0fms[/dim]",

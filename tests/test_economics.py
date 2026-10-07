@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -229,3 +230,13 @@ def test_switch_with_no_typical_growth_assumes_no_new_content():
     economics = turn_economics(switched, previous, PRICING, uses_1h=False)
 
     assert economics.counterfactual_usage.cache_creation_tokens == 0
+
+
+def test_cache_hits_are_neither_priced_nor_counted_as_switches():
+    hit = dataclasses.replace(turn(HAIKU, 0, 0, seconds=30, input_tokens=0, output=0), cache_hit=True)
+    turns = [turn(OPUS, 0, 10_000, seconds=0), hit, turn(OPUS, 10_000, 1_000, seconds=60)]
+
+    result = analyze(turns, PRICING)
+
+    assert result.switches == 0
+    assert result.cache_penalty == pytest.approx(0)

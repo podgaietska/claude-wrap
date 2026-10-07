@@ -61,7 +61,9 @@ def claude(
     log output is written to a file (see `wrap logs`) rather than this
     terminal, so it doesn't interleave with the Claude Code UI; the proxy
     subprocess is always torn down afterward. Each run gets a session ID
-    that groups its requests in the telemetry database (see `wrap stats`).
+    that groups its requests in the telemetry database (see `wrap stats`),
+    and the proxy is told the project directory, which keeps each
+    project's cached answers apart.
 
     Raises:
         typer.Exit: With code 1 if `claude` isn't on PATH or the proxy
@@ -80,7 +82,7 @@ def claude(
     log_file = open(log_path, "w")
 
     session_id = uuid.uuid4().hex[:12]
-    proxy_env = {**os.environ, "WRAP_SESSION_ID": session_id}
+    proxy_env = {**os.environ, "WRAP_SESSION_ID": session_id, "WRAP_PROJECT_DIR": os.getcwd()}
     if debug:
         proxy_env["WRAP_LOG_LEVEL"] = "debug"
 

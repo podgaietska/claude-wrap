@@ -18,8 +18,9 @@ Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's n
 
 **Phase B (per-turn cost/latency telemetry in SQLite, `wrap stats`) is built** — see `wrap/telemetry/`. Not yet verified end-to-end against the real API.
 
+**Phase C (response caching) is in progress**: exact-match caching works behind `cache.enabled` (off by default) — see `wrap/cache/` and [Response cache](#response-cache-experimental). Semantic matching, cache stats and `wrap cache` commands come next.
+
 Not yet built:
-- **Phase C** — semantic response caching.
 - **Phase D** — a local dashboard (`wrap dashboard`) visualizing cost/latency/cache-hit stats.
 
 ## Setup
@@ -50,6 +51,12 @@ Every API request is recorded in `data/wrap.db` (`turn_log` table) whatever the 
 One question in Claude Code is usually several API requests (the question, then a round trip per tool call), plus background calls such as session titles, so `wrap stats` counts requests and breaks them down into new messages, tool calls and side requests.
 
 `wrap stats` reports **net** routing savings: what the session would have cost had every request stayed on the model Claude Code asked for, minus what it cost. Prompt caches belong to one model, so switching a long conversation to a cheaper model makes that model write the whole prompt to its cache again — which can cost more than the cheaper model saves. The savings are split into "saved by cheaper models" and "lost to cache misses" so you can see which way it went. It assumes the requested model would have produced the same output in the same number of requests.
+
+### Response cache (experimental)
+
+With `cache.enabled: true` in `config/config.yaml`, a conversation that opens with a question already answered in the same project (the directory you ran `wrap claude` in) is answered from the cache instead of the API. Only first questions are cached, and only answers that are plain text: anything Claude Code answered by reading files or running tools is not stored. Matching is exact for now, ignoring case, spacing and trailing punctuation. A hit logs `#N cache hit (exact, entry E) → served <model> answer in 3ms`.
+
+This is the one place wrap stores message content: cached questions and answers live in `data/wrap.db` (`cache_entry` table) and expire after `cache.ttl_days` (7). To clear them: `sqlite3 data/wrap.db "DELETE FROM cache_entry"`.
 
 ## Configuration
 
