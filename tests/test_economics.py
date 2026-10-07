@@ -186,3 +186,46 @@ def test_self_check_covers_only_unswitched_turns_within_ttl():
 
 def test_no_eligible_turns_gives_no_check_rate():
     assert analyze([turn(OPUS, 0, 1_000)], PRICING).check_rate is None
+
+
+
+def test_switch_does_not_count_another_tokenizers_count_as_new_content():
+    # The same conversation is 151k tokens on Haiku but 207k after switching
+    # to a model with a different tokenizer, though it only grew ~400 tokens.
+    previous = turn(HAIKU, 151_000, 300, seconds=0)
+    switched = turn(OPUS, 0, 207_000, seconds=10)
+
+    economics = turn_economics(switched, previous, PRICING, uses_1h=False, typical_growth=400)
+
+    assert economics.counterfactual_usage.cache_creation_tokens == 400
+    assert economics.counterfactual_usage.cache_read_tokens == 206_600
+    # Served on the requested model, so the whole difference is the switch's cache miss.
+    assert economics.saved_by_model == pytest.approx(0)
+    assert economics.recached_tokens == 206_600
+
+
+def test_typical_growth_is_the_median_write_of_turns_that_stayed_on_one_model():
+    turns = [
+        turn(HAIKU, 0, 150_000, seconds=0),  # first turn: no previous, excluded
+        turn(HAIKU, 150_000, 400, seconds=10),
+        turn(HAIKU, 150_400, 600, seconds=20),
+        turn(OPUS, 0, 207_000, seconds=30),  # switch: excluded
+        turn(HAIKU, 151_000, 300, seconds=40),  # switch back: excluded
+        turn(HAIKU, 151_300, 9_000, seconds=20 * 60),  # beyond the TTL: excluded
+    ]
+
+    result = analyze(turns, PRICING)
+
+    expected = [turn_economics(t, prev, PRICING, uses_1h=False, typical_growth=500)
+                for prev, t in zip([None, *turns], turns)]
+    assert result.counterfactual_cost == pytest.approx(sum(e.counterfactual_cost for e in expected))
+    assert result.cache_penalty == pytest.approx(sum(e.cache_penalty for e in expected))
+
+
+def test_switch_with_no_typical_growth_assumes_no_new_content():
+    previous = turn(HAIKU, 151_000, 300, seconds=0)
+    switched = turn(OPUS, 0, 207_000, seconds=10)
+
+    economics = turn_economics(switched, previous, PRICING, uses_1h=False)
+
+    assert economics.counterfactual_usage.cache_creation_tokens == 0

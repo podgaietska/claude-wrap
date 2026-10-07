@@ -45,9 +45,11 @@ wrap stats                 # after (or during) a session: tokens and cost per ti
 wrap stats --session all   # or a session ID from the banner
 ```
 
-Every turn is recorded in `data/wrap.db` (`turn_log` table) whatever the log level, priced with `config/pricing.yaml`.
+Every API request is recorded in `data/wrap.db` (`turn_log` table) whatever the log level, priced with `config/pricing.yaml`.
 
-`wrap stats` reports **net** routing savings: what the session would have cost had every turn stayed on the model Claude Code asked for, minus what it cost. Prompt caches belong to one model, so switching a long conversation to a cheaper model makes that model write the whole prompt to its cache again — which can cost more than the cheaper model saves. The savings are split into "saved by cheaper models" and "lost to cache misses" so you can see which way it went. It assumes the requested model would have produced the same output in the same number of turns.
+One question in Claude Code is usually several API requests (the question, then a round trip per tool call), plus background calls such as session titles, so `wrap stats` counts requests and breaks them down into new messages, tool calls and side requests.
+
+`wrap stats` reports **net** routing savings: what the session would have cost had every request stayed on the model Claude Code asked for, minus what it cost. Prompt caches belong to one model, so switching a long conversation to a cheaper model makes that model write the whole prompt to its cache again — which can cost more than the cheaper model saves. The savings are split into "saved by cheaper models" and "lost to cache misses" so you can see which way it went. It assumes the requested model would have produced the same output in the same number of requests.
 
 ## Configuration
 

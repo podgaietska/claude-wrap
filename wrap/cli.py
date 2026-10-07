@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import Counter
 
 import typer
 from rich import box
@@ -51,7 +52,7 @@ def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
 
 @app.command()
 def claude(
-    debug: bool = typer.Option(False, "--debug", help="Log a line per turn with its tokens, cost and latency."),
+    debug: bool = typer.Option(False, "--debug", help="Log each request's details, tokens, cost and latency."),
 ):
     """Launch Claude Code with routing-aware proxying turned on.
 
@@ -60,7 +61,7 @@ def claude(
     log output is written to a file (see `wrap logs`) rather than this
     terminal, so it doesn't interleave with the Claude Code UI; the proxy
     subprocess is always torn down afterward. Each run gets a session ID
-    that groups its turns in the telemetry database (see `wrap stats`).
+    that groups its requests in the telemetry database (see `wrap stats`).
 
     Raises:
         typer.Exit: With code 1 if `claude` isn't on PATH or the proxy
@@ -112,7 +113,7 @@ def claude(
             f"tiers: small={config.tiers['small'].model}, large={config.tiers['large'].model}\n"
             f"session: {session_id}\n"
             f"[dim]Logs: {log_path} -- run `wrap logs` in another terminal to follow them live"
-            f"{'' if debug else ' (start with --debug for per-turn costs)'}. "
+            f"{'' if debug else ' (start with --debug for per-request costs)'}. "
             f"Run `wrap stats` afterwards for this session's costs.[/dim]"
         )
 
@@ -167,7 +168,7 @@ def stats(
 
 
 def print_stats(out: Console, conn: sqlite3.Connection, pricing: PricingTable, session: str) -> bool:
-    """Prints the per-tier table and routing economics for a selection of turns.
+    """Prints the per-tier table and routing economics for a selection of requests.
 
     Args:
         out: Where to print.
@@ -176,26 +177,27 @@ def print_stats(out: Console, conn: sqlite3.Connection, pricing: PricingTable, s
         session: `last`, `all`, or a session ID.
 
     Returns:
-        False if there were no turns to show.
+        False if there were no requests to show.
     """
     if not db.has_turns(conn):
-        console.print("[yellow]No turns logged yet -- run `wrap claude` first.[/yellow]")
+        console.print("[yellow]No requests logged yet -- run `wrap claude` first.[/yellow]")
         return False
 
     all_sessions = session == "all"
     session_id = db.latest_session_id(conn) if session == "last" else None if all_sessions else session
     turns = db.fetch_turns(conn, session_id, all_sessions)
     if not turns:
-        console.print(f"[yellow]No turns logged for session {session_id}.[/yellow]")
+        console.print(f"[yellow]No requests logged for session {session_id}.[/yellow]")
         return False
 
     title = "All sessions" if all_sessions else f"Session {session_id or '(outside wrap claude)'}"
-    out.print(f"[bold]{title}[/bold] — {len(turns)} turns\n")
+    out.print(f"[bold]{title}[/bold] — {len(turns)} requests ({_breakdown(turns)})")
+    out.print("[dim]Side requests are Claude Code's background calls and subagents.[/dim]\n")
 
     table = Table(box=box.SIMPLE_HEAD)
     for column in ("Tier", "Served model"):
         table.add_column(column)
-    for column in ("Turns", "Input", "Output", "Cache read", "Cache write", "Cost"):
+    for column in ("Requests", "Input", "Output", "Cache read", "Cache write", "Cost"):
         table.add_column(column, justify="right")
     rows = db.summarize(conn, session_id, all_sessions)
     for row in rows:
@@ -219,11 +221,46 @@ def print_stats(out: Console, conn: sqlite3.Connection, pricing: PricingTable, s
     if failed:
         out.print(f"[dim]{failed} failed requests (no cost).[/dim]")
     if unpriced:
-        out.print(f"[yellow]{unpriced} turns unpriced -- their model is missing from the pricing file.[/yellow]")
+        out.print(f"[yellow]{unpriced} requests unpriced -- their model is missing from the pricing file.[/yellow]")
     out.print()
 
     _print_economics(out, analyze(turns, pricing))
     return True
+
+
+def _breakdown(turns: list[db.TurnRecord]) -> str:
+    """Splits requests into new messages, tool calls and side requests.
+
+    One question in Claude Code is usually several API requests: the
+    question, then a round trip per tool call. A session's main
+    conversation is taken to be the one with the most requests; the rest
+    are side requests (background calls such as session titles, and
+    subagents).
+
+    Args:
+        turns: The requests to describe.
+
+    Returns:
+        E.g. "5 new messages, 8 tool calls, 2 side requests".
+    """
+    sizes = Counter((t.session_id, t.thread_key) for t in turns)
+    main_threads = {}
+    for (session_id, thread_key), size in sizes.items():
+        if size > sizes.get((session_id, main_threads.get(session_id)), 0):
+            main_threads[session_id] = thread_key
+
+    tool_calls = new_messages = side = 0
+    for t in turns:
+        if t.thread_key != main_threads[t.session_id]:
+            side += 1
+        elif t.was_tool_continuation:
+            tool_calls += 1
+        elif t.tier in ("small", "large"):
+            new_messages += 1
+        else:
+            side += 1
+    parts = [(new_messages, "new message"), (tool_calls, "tool call"), (side, "side request")]
+    return ", ".join(f"{n} {label}{'' if n == 1 else 's'}" for n, label in parts)
 
 
 def _print_economics(out: Console, economics: Economics) -> None:
@@ -250,13 +287,13 @@ def _print_economics(out: Console, economics: Economics) -> None:
     )
     out.print(f"  [bold]{'Net savings:':<40}[/bold][bold {net_style}]{format_signed_cost(net):>10}[/bold {net_style}]{share}")
     if economics.check_rate is None:
-        out.print("  [dim]Estimate check: no turns without a switch to check against yet[/dim]")
+        out.print("  [dim]Estimate check: no requests without a switch to check against yet[/dim]")
     else:
         out.print(
             f"  [dim]Estimate check: matches on {economics.check_rate:.0%} of "
-            f"{economics.check_eligible} turns without a switch[/dim]"
+            f"{economics.check_eligible} requests without a switch[/dim]"
         )
-    out.print("[dim]Assumes the same output and number of turns on the requested model; tokenizers differ.[/dim]")
+    out.print("[dim]Assumes the same output and number of requests on the requested model; tokenizers differ.[/dim]")
 
 
 @app.command()
