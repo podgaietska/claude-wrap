@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from wrap.telemetry import db
@@ -92,3 +94,39 @@ def test_summarize_groups_by_tier_and_served_model(conn):
     assert large.turns == 2
     assert large.cost_usd == pytest.approx(0.10)
     assert large.unpriced_turns == 1
+
+
+def test_cache_fields_round_trip(conn):
+    original = turn(cache_hit=True, similarity_score=1.0, cache_eligible=True, cache_entry_id=7,
+                    cache_miss_reason=None)
+    row_id = db.insert_turn(conn, original)
+    [stored] = db.fetch_turns(conn, "s1")
+    assert stored == TurnRecord(**{**original.__dict__, "id": row_id})
+
+
+def test_older_database_gains_the_cache_columns_and_keeps_its_rows(tmp_path):
+    path = tmp_path / "wrap.db"
+    old = sqlite3.connect(path)
+    old_schema = db._SCHEMA.replace(
+        """    error                    TEXT,
+    cache_eligible           INTEGER NOT NULL DEFAULT 0,
+    cache_entry_id           INTEGER,
+    cache_miss_reason        TEXT
+);""",
+        """    error                    TEXT
+);""",
+    )
+    assert old_schema != db._SCHEMA
+    old.executescript(old_schema)
+    old.execute("INSERT INTO turn_log (session_id, timestamp, tier) VALUES ('s1', '2026-10-01T00:00:00+00:00', 'small')")
+    old.commit()
+    old.close()
+
+    conn = db.connect(path)
+    [stored] = db.fetch_turns(conn, "s1")
+    assert stored.tier == "small"
+    assert not stored.cache_eligible and stored.cache_entry_id is None and stored.cache_miss_reason is None
+    db.insert_turn(conn, turn(cache_eligible=True, cache_miss_reason="empty"))
+    assert db.fetch_turns(conn, "s1")[-1].cache_miss_reason == "empty"
+    conn.close()
+    db.connect(path).close()  # reopening is a no-op

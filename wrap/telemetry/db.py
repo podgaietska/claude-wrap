@@ -6,7 +6,7 @@ from pathlib import Path
 
 from wrap.telemetry.usage import Usage
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _USAGE_COLUMNS = (
     "input_tokens",
@@ -43,10 +43,21 @@ CREATE TABLE IF NOT EXISTS turn_log (
     latency_ms               REAL,
     cache_hit                INTEGER NOT NULL DEFAULT 0,
     similarity_score         REAL,
-    error                    TEXT
+    error                    TEXT,
+    cache_eligible           INTEGER NOT NULL DEFAULT 0,
+    cache_entry_id           INTEGER,
+    cache_miss_reason        TEXT
 );
 CREATE INDEX IF NOT EXISTS turn_log_session ON turn_log (session_id, id);
 """
+
+# Columns added after the first schema version, with their definitions, so
+# an existing database gains them on open.
+_ADDED_COLUMNS = {
+    "cache_eligible": "INTEGER NOT NULL DEFAULT 0",
+    "cache_entry_id": "INTEGER",
+    "cache_miss_reason": "TEXT",
+}
 
 
 @dataclass
@@ -74,9 +85,15 @@ class TurnRecord:
         cost_usd: The turn's cost, None if the model has no price.
         ttfb_ms: Time until upstream response headers arrived.
         latency_ms: Time until the response was fully relayed.
-        cache_hit: Phase C placeholder: served from the semantic cache.
-        similarity_score: Phase C placeholder.
+        cache_hit: Served from the response cache, with no upstream call.
+        similarity_score: On a hit, how closely the question matched the
+            entry's (1.0 for an exact match).
         error: Error type and message, or why a stream ended early.
+        cache_eligible: The request passed the cache's eligibility rules,
+            so it was looked up (the denominator of the hit rate).
+        cache_entry_id: The cache entry served (hit) or written (insert).
+        cache_miss_reason: Why an eligible request missed, e.g. "empty"
+            (nothing cached for the project yet) or "exact_only".
         id: Row ID, set when read back from the database.
     """
 
@@ -99,6 +116,9 @@ class TurnRecord:
     cache_hit: bool = False
     similarity_score: float | None = None
     error: str | None = None
+    cache_eligible: bool = False
+    cache_entry_id: int | None = None
+    cache_miss_reason: str | None = None
     id: int | None = None
 
     @property
@@ -136,9 +156,18 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    _add_missing_columns(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return conn
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """Adds columns newer than the database's `turn_log` table, keeping its rows."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(turn_log)")}
+    for column, definition in _ADDED_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE turn_log ADD COLUMN {column} {definition}")
 
 
 def insert_turn(conn: sqlite3.Connection, record: TurnRecord) -> int:
@@ -171,6 +200,9 @@ def insert_turn(conn: sqlite3.Connection, record: TurnRecord) -> int:
         "cache_hit": int(record.cache_hit),
         "similarity_score": record.similarity_score,
         "error": record.error,
+        "cache_eligible": int(record.cache_eligible),
+        "cache_entry_id": record.cache_entry_id,
+        "cache_miss_reason": record.cache_miss_reason,
     }
     columns = ", ".join(values)
     placeholders = ", ".join(f":{column}" for column in values)
@@ -248,6 +280,6 @@ def _session_filter(session_id: str | None, all_sessions: bool) -> tuple[str, tu
 def _to_record(row: sqlite3.Row) -> TurnRecord:
     data = dict(row)
     usage = Usage(**{column: data.pop(column) for column in _USAGE_COLUMNS})
-    for flag in ("was_tool_continuation", "stream", "cache_hit"):
+    for flag in ("was_tool_continuation", "stream", "cache_hit", "cache_eligible"):
         data[flag] = bool(data[flag])
     return TurnRecord(usage=usage, **data)
