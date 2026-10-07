@@ -22,10 +22,16 @@ its prefix cached on the requested model (if within the cache TTL), never
 less than was actually read from the cache, with the same uncached input
 and output. Assumes the requested model would
 have produced the same output and taken the same number of turns.
+
+Models from different families count the same text as different numbers
+of tokens, so token counts are only compared between turns on the same
+model. On a turn that switched models, the new content is instead taken
+to be the conversation's typical growth per turn.
 """
 
 from __future__ import annotations
 
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -125,12 +131,21 @@ def ttl_seconds(uses_1h: bool) -> int:
     return TTL_1H_SECONDS if uses_1h else TTL_5M_SECONDS
 
 
-def counterfactual_usage(turn: TurnRecord, previous: TurnRecord | None, uses_1h: bool) -> Usage:
+def counterfactual_usage(
+    turn: TurnRecord, previous: TurnRecord | None, uses_1h: bool, typical_growth: int | None = None
+) -> Usage:
     """Estimates a turn's token split had the conversation never switched models.
 
-    The previous turn's cached prefix (its cache reads plus writes) would
-    be read from the cache if it's still live; the rest of the cacheable
-    prompt would be written. Uncached input and output stay as they were.
+    If the previous turn's cache entry is still live, its cached prefix
+    (cache reads plus writes) would be read from the cache and the rest of
+    the cacheable prompt written. Uncached input and output stay as they were.
+
+    When the previous turn was served by a different model, its token
+    counts come from a different tokenizer and can't be subtracted from
+    this turn's -- Sonnet 5 counts a prompt Haiku 4.5 calls 153k tokens as
+    207k, which would look like 54k of new content. So on a switch, the new
+    content is taken to be `typical_growth` instead, and the rest of the
+    prompt is read from the cache.
 
     The estimate never reads less from the cache than actually happened:
     without switches every request goes to the requested model, so its
@@ -142,6 +157,8 @@ def counterfactual_usage(turn: TurnRecord, previous: TurnRecord | None, uses_1h:
         turn: The turn to estimate.
         previous: The previous successful turn in the same conversation.
         uses_1h: Whether the conversation caches with the 1-hour TTL.
+        typical_growth: Cache-write tokens on the conversation's turns that
+            didn't switch models (see `typical_growth`); None counts as 0.
 
     Returns:
         The estimated `Usage`.
@@ -150,8 +167,12 @@ def counterfactual_usage(turn: TurnRecord, previous: TurnRecord | None, uses_1h:
     cacheable = usage.cache_read_tokens + usage.cache_creation_tokens
     cache_read = usage.cache_read_tokens
     if previous is not None and _within_ttl(previous, turn, uses_1h):
-        previous_prefix = previous.usage.cache_read_tokens + previous.usage.cache_creation_tokens
-        cache_read = max(cache_read, min(previous_prefix, cacheable))
+        if previous.model == turn.model:
+            previous_prefix = previous.usage.cache_read_tokens + previous.usage.cache_creation_tokens
+            estimate = min(previous_prefix, cacheable)
+        else:
+            estimate = cacheable - min(typical_growth or 0, cacheable)
+        cache_read = max(cache_read, estimate)
     cache_creation = cacheable - cache_read
     return Usage(
         input_tokens=usage.input_tokens,
@@ -163,8 +184,25 @@ def counterfactual_usage(turn: TurnRecord, previous: TurnRecord | None, uses_1h:
     )
 
 
+def typical_growth(cache_writes: list[int]) -> int | None:
+    """A conversation's typical new content per turn, from its turns that didn't switch.
+
+    Args:
+        cache_writes: `cache_creation_tokens` of turns served by the same
+            model as the turn before them, within the cache TTL.
+
+    Returns:
+        The median, or None with nothing to go on.
+    """
+    return int(statistics.median(cache_writes)) if cache_writes else None
+
+
 def turn_economics(
-    turn: TurnRecord, previous: TurnRecord | None, pricing: PricingTable, uses_1h: bool
+    turn: TurnRecord,
+    previous: TurnRecord | None,
+    pricing: PricingTable,
+    uses_1h: bool,
+    typical_growth: int | None = None,
 ) -> TurnEconomics | None:
     """Compares one turn's actual cost with its counterfactual.
 
@@ -173,6 +211,7 @@ def turn_economics(
         previous: The previous successful turn in the same conversation.
         pricing: Rates for the served and requested models.
         uses_1h: Whether the conversation caches with the 1-hour TTL.
+        typical_growth: See `counterfactual_usage`.
 
     Returns:
         The comparison, or None if either model has no price.
@@ -182,7 +221,7 @@ def turn_economics(
     if served is None or requested is None:
         return None
 
-    counterfactual = counterfactual_usage(turn, previous, uses_1h)
+    counterfactual = counterfactual_usage(turn, previous, uses_1h, typical_growth)
     actual_cost = served.cost(turn.usage)
     served_counterfactual = served.cost(counterfactual)
     counterfactual_cost = requested.cost(counterfactual)
@@ -218,13 +257,17 @@ def analyze(turns: list[TurnRecord], pricing: PricingTable) -> Economics:
     result = Economics()
     for thread in threads.values():
         uses_1h = any(t.usage.cache_creation_1h_tokens > 0 for t in thread)
-        previous: TurnRecord | None = None
-        for turn in thread:
-            if turn.status_code is None or turn.status_code >= 400:
-                result.error_turns += 1
-                continue
+        succeeded = [t for t in thread if t.status_code is not None and t.status_code < 400]
+        result.error_turns += len(thread) - len(succeeded)
+        growth = typical_growth([
+            turn.usage.cache_creation_tokens
+            for previous, turn in zip(succeeded, succeeded[1:])
+            if previous.model == turn.model and _within_ttl(previous, turn, uses_1h)
+        ])
 
-            economics = turn_economics(turn, previous, pricing, uses_1h)
+        previous: TurnRecord | None = None
+        for turn in succeeded:
+            economics = turn_economics(turn, previous, pricing, uses_1h, growth)
             previous = turn
             if economics is None:
                 result.unpriced_turns += 1

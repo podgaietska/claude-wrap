@@ -9,7 +9,7 @@ from pathlib import Path
 
 from wrap.telemetry import db
 from wrap.telemetry.db import TurnRecord
-from wrap.telemetry.economics import turn_economics
+from wrap.telemetry.economics import turn_economics, typical_growth
 from wrap.telemetry.pricing import PricingTable
 
 logger = logging.getLogger("wrap.proxy")
@@ -65,9 +65,11 @@ class TurnLogger:
         self.session_id = session_id
         self._conn = db.connect(db_path)
         self._lock = threading.Lock()
-        # Per conversation: the last successful turn and whether it caches
-        # with the 1-hour TTL, for the DEBUG `switch` line.
+        # Per conversation, for the DEBUG `switch` line: the last successful
+        # turn, whether it caches with the 1-hour TTL, and the cache writes of
+        # turns that stayed on the same model (see `economics.typical_growth`).
         self._last_turn: dict[str | None, tuple[TurnRecord, bool]] = {}
+        self._growth: dict[str | None, list[int]] = {}
 
     def record(self, record: TurnRecord, req_id: int | None = None) -> None:
         """Prices and stores one turn; never raises.
@@ -116,9 +118,13 @@ class TurnLogger:
         previous, uses_1h = self._last_turn.get(record.thread_key, (None, False))
         uses_1h = uses_1h or u.cache_creation_1h_tokens > 0
         self._last_turn[record.thread_key] = (record, uses_1h)
-        if previous is None or previous.model == record.model:
+        growth = self._growth.setdefault(record.thread_key, [])
+        if previous is None:
             return
-        economics = turn_economics(record, previous, self.pricing, uses_1h)
+        if previous.model == record.model:
+            growth.append(u.cache_creation_tokens)
+            return
+        economics = turn_economics(record, previous, self.pricing, uses_1h, typical_growth(growth))
         if economics is not None:
             logger.debug(
                 "[dim]%sswitch %s→%s: re-cached %s tokens (%s)[/dim]",
