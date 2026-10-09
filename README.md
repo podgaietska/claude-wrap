@@ -1,4 +1,4 @@
-# prompt-router
+# claude-wrap
 
 A model router for [Claude Code](https://claude.com/claude-code). `wrap claude` runs a real Claude Code session through a local proxy that sends each question to a cheaper or more capable model, depending on how complex it looks. `wrap stats` and a local dashboard show what that saves, including the cache misses that switching models causes.
 

@@ -1,5 +1,5 @@
 [project]
-name = "prompt-router"
+name = "claude-wrap"
 version = "0.1.0"
 description = "Cost-aware model routing and semantic caching proxy for Claude Code"
 requires-python = ">=3.10"
