@@ -1,8 +1,27 @@
 [project]
 name = "claude-wrap"
 version = "0.1.0"
-description = "Cost-aware model routing and semantic caching proxy for Claude Code"
+description = "Cost-aware model routing proxy for Claude Code"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Mariia Podgaietska" }]
 requires-python = ">=3.10"
+keywords = ["claude", "claude-code", "anthropic", "llm", "proxy", "routing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
@@ -13,10 +32,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cache = [
-    "sentence-transformers>=3.0",
-    "numpy>=1.26",
-]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
@@ -24,15 +39,23 @@ dev = [
     "ruff==0.17.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/podgaietska/claude-wrap"
+Repository = "https://github.com/podgaietska/claude-wrap"
+Issues = "https://github.com/podgaietska/claude-wrap/issues"
+
 [project.scripts]
 wrap = "wrap.cli:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["wrap"]
+
+[tool.hatch.build.targets.sdist]
+include = ["wrap", "tests", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 markers = ["slow: timing benchmarks; deselect with -m 'not slow'"]
