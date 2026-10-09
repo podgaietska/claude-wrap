@@ -183,8 +183,7 @@ def print_stats(out: Console, conn: sqlite3.Connection, pricing: PricingTable, s
         console.print("[yellow]No requests logged yet -- run `wrap claude` first.[/yellow]")
         return False
 
-    all_sessions = session == "all"
-    session_id = db.latest_session_id(conn) if session == "last" else None if all_sessions else session
+    session_id, all_sessions = db.resolve_session(conn, session)
     turns = db.fetch_turns(conn, session_id, all_sessions)
     if not turns:
         console.print(f"[yellow]No requests logged for session {session_id}.[/yellow]")

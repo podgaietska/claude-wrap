@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS turn_log (
     error                    TEXT
 );
 CREATE INDEX IF NOT EXISTS turn_log_session ON turn_log (session_id, id);
+CREATE INDEX IF NOT EXISTS turn_log_time ON turn_log (timestamp);
 """
 
 
@@ -122,6 +123,27 @@ class SummaryRow:
     unpriced_turns: int
 
 
+@dataclass
+class SessionRow:
+    """One `wrap claude` session's totals, from `list_sessions`.
+
+    Attributes:
+        id: The session ID, or None for requests logged outside a session.
+        started: Timestamp of its first request.
+        last_seen: Timestamp of its latest request.
+        requests: Number of requests.
+        cost_usd: Total cost of its priced requests.
+        failed: Requests that failed (no status or an error status).
+    """
+
+    id: str | None
+    started: str
+    last_seen: str
+    requests: int
+    cost_usd: float
+    failed: int
+
+
 def connect(path: Path) -> sqlite3.Connection:
     """Opens the telemetry database, creating it and its schema if needed.
 
@@ -138,6 +160,28 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
+    return conn
+
+
+def connect_readonly(path: Path) -> sqlite3.Connection:
+    """Opens an existing telemetry database for reading only.
+
+    Unlike `connect`, this never creates the file or its schema, and any
+    write through the connection fails.
+
+    Args:
+        path: Path to the SQLite file.
+
+    Returns:
+        An open read-only connection, usable from any thread.
+
+    Raises:
+        FileNotFoundError: If the database doesn't exist yet.
+    """
+    if not path.exists():
+        raise FileNotFoundError(path)
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -185,12 +229,49 @@ def latest_session_id(conn: sqlite3.Connection) -> str | None:
     return row["session_id"] if row else None
 
 
+def resolve_session(conn: sqlite3.Connection, session: str) -> tuple[str | None, bool]:
+    """Turns a `--session` style selection into `fetch_turns` arguments.
+
+    Args:
+        conn: An open telemetry connection.
+        session: `last` (the most recent session), `all`, or a session ID.
+
+    Returns:
+        `(session_id, all_sessions)`.
+    """
+    if session == "all":
+        return None, True
+    if session == "last":
+        return latest_session_id(conn), False
+    return session, False
+
+
+def list_sessions(conn: sqlite3.Connection) -> list[SessionRow]:
+    """Totals every session, most recently active first."""
+    rows = conn.execute(
+        """
+        SELECT session_id AS id,
+               MIN(timestamp) AS started,
+               MAX(timestamp) AS last_seen,
+               COUNT(*) AS requests,
+               COALESCE(SUM(cost_usd), 0) AS cost_usd,
+               SUM(status_code IS NULL OR status_code >= 400) AS failed
+        FROM turn_log
+        GROUP BY session_id
+        ORDER BY MAX(id) DESC
+        """
+    ).fetchall()
+    return [SessionRow(**dict(row)) for row in rows]
+
+
 def has_turns(conn: sqlite3.Connection) -> bool:
     """Returns True if any turn has been logged."""
     return conn.execute("SELECT 1 FROM turn_log LIMIT 1").fetchone() is not None
 
 
-def fetch_turns(conn: sqlite3.Connection, session_id: str | None = None, all_sessions: bool = False) -> list[TurnRecord]:
+def fetch_turns(
+    conn: sqlite3.Connection, session_id: str | None = None, all_sessions: bool = False, since: str | None = None
+) -> list[TurnRecord]:
     """Reads turns back, oldest first.
 
     Args:
@@ -198,27 +279,31 @@ def fetch_turns(conn: sqlite3.Connection, session_id: str | None = None, all_ses
         session_id: The session to read; None means turns logged outside
             a `wrap claude` session.
         all_sessions: Read every turn, ignoring `session_id`.
+        since: Only turns at or after this ISO-8601 UTC timestamp.
 
     Returns:
         The matching turns, ordered by ID.
     """
-    where, params = _session_filter(session_id, all_sessions)
+    where, params = _session_filter(session_id, all_sessions, since)
     rows = conn.execute(f"SELECT * FROM turn_log {where} ORDER BY id", params).fetchall()
     return [_to_record(row) for row in rows]
 
 
-def summarize(conn: sqlite3.Connection, session_id: str | None = None, all_sessions: bool = False) -> list[SummaryRow]:
+def summarize(
+    conn: sqlite3.Connection, session_id: str | None = None, all_sessions: bool = False, since: str | None = None
+) -> list[SummaryRow]:
     """Totals turns, tokens and cost per tier and served model.
 
     Args:
         conn: An open telemetry connection.
         session_id: The session to summarize (see `fetch_turns`).
         all_sessions: Summarize every turn, ignoring `session_id`.
+        since: Only turns at or after this ISO-8601 UTC timestamp.
 
     Returns:
         One row per (tier, served model), largest cost first.
     """
-    where, params = _session_filter(session_id, all_sessions)
+    where, params = _session_filter(session_id, all_sessions, since)
     rows = conn.execute(
         f"""
         SELECT tier,
@@ -239,10 +324,15 @@ def summarize(conn: sqlite3.Connection, session_id: str | None = None, all_sessi
     return [SummaryRow(**dict(row)) for row in rows]
 
 
-def _session_filter(session_id: str | None, all_sessions: bool) -> tuple[str, tuple]:
-    if all_sessions:
-        return "", ()
-    return "WHERE session_id IS ?", (session_id,)
+def _session_filter(session_id: str | None, all_sessions: bool, since: str | None = None) -> tuple[str, tuple]:
+    clauses, params = [], []
+    if not all_sessions:
+        clauses.append("session_id IS ?")
+        params.append(session_id)
+    if since is not None:
+        clauses.append("timestamp >= ?")
+        params.append(since)
+    return ("WHERE " + " AND ".join(clauses) if clauses else ""), tuple(params)
 
 
 def _to_record(row: sqlite3.Row) -> TurnRecord:
