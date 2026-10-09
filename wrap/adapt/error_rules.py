@@ -5,6 +5,7 @@ wrong (or have changed), the matching rule says what the model actually
 supports, so the proxy can learn it, re-adapt, and retry. Only add rules for
 error messages that have actually been observed or are documented verbatim.
 """
+
 from __future__ import annotations
 
 import re

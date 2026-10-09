@@ -137,6 +137,13 @@ pytest
 
 The suite is fully offline — the Anthropic API is mocked with `respx`, no real requests or API costs.
 
+```bash
+ruff check .           # lint
+ruff format .          # format
+```
+
+CI runs the tests on Python 3.10–3.14 (and macOS) plus both ruff checks on every pull request; `main` only accepts PRs that pass.
+
 ## Manual verification
 
 ```bash

@@ -75,7 +75,11 @@ def test_trivial_message_rewrites_model_to_small_tier():
         response = client.post(
             "/v1/messages",
             headers={"x-api-key": "test", "anthropic-version": "2023-06-01"},
-            json={"model": "requested-model", "max_tokens": 100, "messages": [{"role": "user", "content": "what is python?"}]},
+            json={
+                "model": "requested-model",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "what is python?"}],
+            },
         )
 
     assert response.status_code == 200
@@ -98,7 +102,11 @@ def test_complex_message_rewrites_model_to_large_tier():
         response = client.post(
             "/v1/messages",
             headers={"x-api-key": "test", "anthropic-version": "2023-06-01"},
-            json={"model": "requested-model", "max_tokens": 100, "messages": [{"role": "user", "content": complex_text}]},
+            json={
+                "model": "requested-model",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": complex_text}],
+            },
         )
 
     assert response.status_code == 200
@@ -287,9 +295,7 @@ def test_auth_headers_are_forwarded_unchanged():
 
 @respx.mock
 def test_other_paths_are_forwarded_unmodified():
-    route = respx.get("https://api.anthropic.com/v1/models").mock(
-        return_value=httpx.Response(200, json={"data": []})
-    )
+    route = respx.get("https://api.anthropic.com/v1/models").mock(return_value=httpx.Response(200, json={"data": []}))
 
     with TestClient(create_app(make_config())) as client:
         response = client.get("/v1/models", headers={"x-api-key": "test"})
@@ -318,7 +324,10 @@ def test_question_followed_by_system_reminder_is_routed():
 
 @respx.mock
 def test_effort_400_is_learned_and_retried_without_effort():
-    error = {"type": "error", "error": {"type": "invalid_request_error", "message": "This model does not support the effort parameter."}}
+    error = {
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": "This model does not support the effort parameter."},
+    }
     route = respx.post("https://api.anthropic.com/v1/messages").mock(
         side_effect=[httpx.Response(400, json=error), httpx.Response(200, json={}), httpx.Response(200, json={})]
     )
@@ -359,7 +368,12 @@ USAGE_BODY = {
     "id": "msg_1",
     "model": "small-model",
     "stop_reason": "end_turn",
-    "usage": {"input_tokens": 100, "output_tokens": 200, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0},
+    "usage": {
+        "input_tokens": 100,
+        "output_tokens": 200,
+        "cache_read_input_tokens": 1000,
+        "cache_creation_input_tokens": 0,
+    },
 }
 
 
@@ -373,7 +387,12 @@ def test_streamed_response_is_relayed_byte_for_byte_and_logged(tmp_path):
         response = client.post(
             "/v1/messages",
             headers=HEADERS,
-            json={"model": "requested-model", "max_tokens": 100, "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "requested-model",
+                "max_tokens": 100,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
 
     assert response.content == STREAM
@@ -455,7 +474,9 @@ def test_mid_turn_request_is_logged_as_a_continuation_of_its_question(tmp_path):
     ]
 
     with TestClient(create_app(make_config(tmp_path))) as client:
-        client.post("/v1/messages", headers=HEADERS, json={"model": "large-model", "max_tokens": 100, "messages": messages})
+        client.post(
+            "/v1/messages", headers=HEADERS, json={"model": "large-model", "max_tokens": 100, "messages": messages}
+        )
 
     [turn] = logged_turns(tmp_path)
     assert turn.was_tool_continuation
@@ -468,7 +489,11 @@ def test_request_without_a_question_is_logged_as_unrouted(tmp_path):
     respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(200, json=USAGE_BODY))
 
     with TestClient(create_app(make_config(tmp_path))) as client:
-        client.post("/v1/messages", headers=HEADERS, json={"model": "large-model", "max_tokens": 100, "messages": TOOL_RESULT_TURN})
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "large-model", "max_tokens": 100, "messages": TOOL_RESULT_TURN},
+        )
 
     [turn] = logged_turns(tmp_path)
     assert turn.tier == "unrouted"
@@ -553,7 +578,10 @@ def test_thread_key_is_stable_across_a_conversation():
         {"type": "text", "text": "x-anthropic-billing-header: cc_version=1; cch=aaaa"},
         {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
     ]
-    first = {"role": "user", "content": [{"type": "text", "text": "fix the bug", "cache_control": {"type": "ephemeral"}}]}
+    first = {
+        "role": "user",
+        "content": [{"type": "text", "text": "fix the bug", "cache_control": {"type": "ephemeral"}}],
+    }
     later_system = [{**system[0], "text": "x-anthropic-billing-header: cc_version=1; cch=bbbb"}, {**system[1]}]
     later_system[1].pop("cache_control")
     later_first = {"role": "user", "content": [{"type": "text", "text": "fix the bug"}]}
@@ -578,11 +606,19 @@ def test_debug_level_logs_turn_and_switch_lines(tmp_path, monkeypatch, proxy_log
     first = {"role": "user", "content": "hi"}
 
     with TestClient(create_app(make_config(tmp_path))) as client:
-        client.post("/v1/messages", headers=HEADERS, json={"model": "large-model", "max_tokens": 100, "messages": TOOL_RESULT_TURN})
         client.post(
             "/v1/messages",
             headers=HEADERS,
-            json={"model": "large-model", "max_tokens": 100, "messages": [*TOOL_RESULT_TURN, {"role": "assistant", "content": "ok"}, first]},
+            json={"model": "large-model", "max_tokens": 100, "messages": TOOL_RESULT_TURN},
+        )
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={
+                "model": "large-model",
+                "max_tokens": 100,
+                "messages": [*TOOL_RESULT_TURN, {"role": "assistant", "content": "ok"}, first],
+            },
         )
 
     turns = debug_lines(proxy_log, "turn")
@@ -601,7 +637,11 @@ def test_config_log_level_applies_without_the_env_override(tmp_path, monkeypatch
     config.proxy.log_level = "debug"
 
     with TestClient(create_app(config)) as client:
-        client.post("/v1/messages", headers=HEADERS, json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]})
+        client.post(
+            "/v1/messages",
+            headers=HEADERS,
+            json={"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        )
 
     assert len(debug_lines(proxy_log, "turn")) == 1
 
@@ -625,7 +665,12 @@ def test_info_logs_one_routing_line_per_request_and_debug_adds_detail(monkeypatc
 
     messages = [r.getMessage() for r in proxy_log.records]
     assert messages[0].startswith("#1 small → small-model (score")
-    details = ["#1 request: side", "#1 adapted: max_tokens 128000→4096", "#1 ← 200", "#2 passthrough POST /v1/messages/count_tokens"]
+    details = [
+        "#1 request: side",
+        "#1 adapted: max_tokens 128000→4096",
+        "#1 ← 200",
+        "#2 passthrough POST /v1/messages/count_tokens",
+    ]
     for detail in details:
         assert any(detail in m for m in messages) == (level == "debug"), detail
     if level == "info":

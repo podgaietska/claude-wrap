@@ -154,7 +154,9 @@ def logs():
 
 @app.command()
 def stats(
-    session: str = typer.Option("last", "--session", help="`last`, `all`, or a session ID from the `wrap claude` banner."),
+    session: str = typer.Option(
+        "last", "--session", help="`last`, `all`, or a session ID from the `wrap claude` banner."
+    ),
 ):
     """Show token usage, cost and routing savings for a `wrap claude` session."""
     config = load_config()
@@ -242,7 +244,11 @@ def _breakdown(turns: list[db.TurnRecord]) -> str:
         E.g. "5 new messages, 8 tool calls, 2 side requests".
     """
     counts = count_kinds(turns)
-    parts = [(counts["new_message"], "new message"), (counts["tool_call"], "tool call"), (counts["side"], "side request")]
+    parts = [
+        (counts["new_message"], "new message"),
+        (counts["tool_call"], "tool call"),
+        (counts["side"], "side request"),
+    ]
     return ", ".join(f"{n} {label}{'' if n == 1 else 's'}" for n, label in parts)
 
 
@@ -268,7 +274,9 @@ def _print_economics(out: Console, economics: Economics) -> None:
         f"    {lost_label:<38}{format_signed_cost(-economics.cache_penalty):>10}"
         f"   {format_tokens(economics.recached_tokens)} tokens re-cached"
     )
-    out.print(f"  [bold]{'Net savings:':<40}[/bold][bold {net_style}]{format_signed_cost(net):>10}[/bold {net_style}]{share}")
+    out.print(
+        f"  [bold]{'Net savings:':<40}[/bold][bold {net_style}]{format_signed_cost(net):>10}[/bold {net_style}]{share}"
+    )
     if economics.check_rate is None:
         out.print("  [dim]Estimate check: no requests without a switch to check against yet[/dim]")
     else:
@@ -310,9 +318,7 @@ def dashboard(
     console.print(f"[green]wrap dashboard[/green] on {url} -- Ctrl-C to stop")
     if not no_open:
         threading.Thread(target=_open_when_up, args=(host, port, url), daemon=True).start()
-    uvicorn.run(
-        "wrap.dashboard.app:create_dashboard_app", factory=True, host=host, port=port, log_level="warning"
-    )
+    uvicorn.run("wrap.dashboard.app:create_dashboard_app", factory=True, host=host, port=port, log_level="warning")
 
 
 def _port_in_use(host: str, port: int) -> bool:

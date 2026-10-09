@@ -395,10 +395,9 @@ def timeseries(annotated: _Annotated, count_from: datetime | None = None) -> Tim
     size = pick_bucket(start, max(times))
     origin = _floor(start, size)
     points = [
-        Point(t=_iso(origin + timedelta(seconds=i * size)))
-        for i in range(_bucket_index(max(times), origin, size) + 1)
+        Point(t=_iso(origin + timedelta(seconds=i * size))) for i in range(_bucket_index(max(times), origin, size) + 1)
     ]
-    for t, when in zip(counted, times):
+    for t, when in zip(counted, times, strict=True):
         point = points[_bucket_index(when, origin, size)]
         point.requests += 1
         if not succeeded_turn(t):
@@ -440,26 +439,28 @@ def request_rows(
     rows = []
     for t in reversed(annotated.counted[-limit:] if limit > 0 else []):
         economics = annotated.economics.get(id(t))
-        rows.append(RequestRow(
-            id=t.id,
-            timestamp=t.timestamp,
-            kind=annotated.kinds[id(t)],
-            tier=t.tier,
-            score=t.complexity_score,
-            requested_model=t.requested_model,
-            served_model=t.model,
-            input_tokens=t.usage.input_tokens,
-            output_tokens=t.usage.output_tokens,
-            cache_read_tokens=t.usage.cache_read_tokens,
-            cache_creation_tokens=t.usage.cache_creation_tokens,
-            cost_usd=t.cost_usd,
-            net_savings=economics.net_savings if economics is not None else None,
-            switched=economics.switched if economics is not None else False,
-            ttfb_ms=t.ttfb_ms,
-            latency_ms=t.latency_ms,
-            status_code=t.status_code,
-            error=t.error[:ERROR_CHARS] if t.error else None,
-        ))
+        rows.append(
+            RequestRow(
+                id=t.id,
+                timestamp=t.timestamp,
+                kind=annotated.kinds[id(t)],
+                tier=t.tier,
+                score=t.complexity_score,
+                requested_model=t.requested_model,
+                served_model=t.model,
+                input_tokens=t.usage.input_tokens,
+                output_tokens=t.usage.output_tokens,
+                cache_read_tokens=t.usage.cache_read_tokens,
+                cache_creation_tokens=t.usage.cache_creation_tokens,
+                cost_usd=t.cost_usd,
+                net_savings=economics.net_savings if economics is not None else None,
+                switched=economics.switched if economics is not None else False,
+                ttfb_ms=t.ttfb_ms,
+                latency_ms=t.latency_ms,
+                status_code=t.status_code,
+                error=t.error[:ERROR_CHARS] if t.error else None,
+            )
+        )
     return rows
 
 
@@ -476,7 +477,7 @@ def _annotate(turns: list[TurnRecord], pricing: PricingTable, count_from: dateti
     # Kinds and economics need every turn of a conversation; only the
     # counted ones are reported.
     annotated = _Annotated(counted=[t for t in turns if is_counted(t, count_from)])
-    annotated.kinds = {id(t): kind for t, kind in zip(turns, classify(turns))}
+    annotated.kinds = {id(t): kind for t, kind in zip(turns, classify(turns), strict=True)}
     annotated.economics = {id(t): economics for t, economics in iter_turn_economics(turns, pricing)}
     return annotated
 

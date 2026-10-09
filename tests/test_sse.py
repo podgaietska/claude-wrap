@@ -104,7 +104,12 @@ def test_parse_message_body_reads_non_streaming_response():
     body = {
         "model": "claude-sonnet-5",
         "stop_reason": "tool_use",
-        "usage": {"input_tokens": 3, "output_tokens": 50, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 0},
+        "usage": {
+            "input_tokens": 3,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 900,
+            "cache_creation_input_tokens": 0,
+        },
     }
 
     usage, served_model, stop_reason = parse_message_body(json.dumps(body).encode())

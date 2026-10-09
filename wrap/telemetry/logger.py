@@ -37,11 +37,15 @@ def thread_key(body: dict) -> str:
     system = body.get("system")
     if isinstance(system, list):
         system = [
-            block for block in system
+            block
+            for block in system
             if not (isinstance(block, dict) and str(block.get("text", "")).startswith(_BILLING_HEADER_PREFIX))
         ]
     messages = body.get("messages") or []
-    identity = {"system": _without_cache_control(system), "first": _without_cache_control(messages[0] if messages else None)}
+    identity = {
+        "system": _without_cache_control(system),
+        "first": _without_cache_control(messages[0] if messages else None),
+    }
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
@@ -84,7 +88,9 @@ class TurnLogger:
             record = dataclasses.replace(
                 record,
                 session_id=self.session_id,
-                cost_usd=self.pricing.cost(record.model, record.usage) if record.status_code and record.status_code < 400 else None,
+                cost_usd=self.pricing.cost(record.model, record.usage)
+                if record.status_code and record.status_code < 400
+                else None,
             )
             with self._lock:
                 db.insert_turn(self._conn, record)
@@ -102,7 +108,10 @@ class TurnLogger:
         if record.status_code is None or record.status_code >= 400:
             logger.debug(
                 "[dim]%sturn status=%s error=%s %.0fms[/dim]",
-                tag, record.status_code, record.error, record.latency_ms or 0,
+                tag,
+                record.status_code,
+                record.error,
+                record.latency_ms or 0,
             )
             return
 
@@ -110,8 +119,13 @@ class TurnLogger:
         cost = f"${record.cost_usd:.4f}" if record.cost_usd is not None else "$—"
         logger.debug(
             "[dim]%sturn in=%s out=%s cache_r=%s cache_w=%s %s %.0fms%s[/dim]",
-            tag, format_tokens(u.input_tokens), format_tokens(u.output_tokens), format_tokens(u.cache_read_tokens),
-            format_tokens(u.cache_creation_tokens), cost, record.latency_ms or 0,
+            tag,
+            format_tokens(u.input_tokens),
+            format_tokens(u.output_tokens),
+            format_tokens(u.cache_read_tokens),
+            format_tokens(u.cache_creation_tokens),
+            cost,
+            record.latency_ms or 0,
             f" error={record.error}" if record.error else "",
         )
 
@@ -128,8 +142,11 @@ class TurnLogger:
         if economics is not None:
             logger.debug(
                 "[dim]%sswitch %s→%s: re-cached %s tokens (%s)[/dim]",
-                tag, _short_model(previous.model), _short_model(record.model),
-                format_tokens(economics.recached_tokens), format_signed_cost(economics.cache_penalty),
+                tag,
+                _short_model(previous.model),
+                _short_model(record.model),
+                format_tokens(economics.recached_tokens),
+                format_signed_cost(economics.cache_penalty),
             )
 
 

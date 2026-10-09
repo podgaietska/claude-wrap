@@ -1,4 +1,5 @@
 """Short, content-free descriptions of requests and routing decisions for the log."""
+
 from __future__ import annotations
 
 from rich.markup import escape

@@ -6,6 +6,7 @@ capability is unknown), and returns human-readable notes on what changed.
 To support a new incompatibility, add a capability field, an adapter, and
 append it to `ADAPTERS`.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

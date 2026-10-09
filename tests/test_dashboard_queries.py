@@ -10,8 +10,22 @@ from wrap.dashboard.queries import build_stats, percentile, pick_bucket, request
 from wrap.telemetry.economics import analyze
 
 
-def req(model, cache_read, cache_write, seconds, *, tier="small", score=0.1, continuation=False, thread="t1",
-        status=200, ttfb=None, latency=None, error=None, cache_hit=False):
+def req(
+    model,
+    cache_read,
+    cache_write,
+    seconds,
+    *,
+    tier="small",
+    score=0.1,
+    continuation=False,
+    thread="t1",
+    status=200,
+    ttfb=None,
+    latency=None,
+    error=None,
+    cache_hit=False,
+):
     t = turn(model, cache_read, cache_write, seconds=seconds, thread=thread, status=status)
     return dataclasses.replace(
         t,
@@ -83,8 +97,10 @@ def test_routing_share_and_histogram_skip_tool_calls_and_side_requests():
 
 
 def test_histogram_edges():
-    turns = [req(HAIKU, 0, 10, i, score=score, tier="large" if score >= 0.5 else "small")
-             for i, score in enumerate([0.0, 0.5, 1.0, 0.15, 0.35])]
+    turns = [
+        req(HAIKU, 0, 10, i, score=score, tier="large" if score >= 0.5 else "small")
+        for i, score in enumerate([0.0, 0.5, 1.0, 0.15, 0.35])
+    ]
 
     bins = stats(turns).routing.histogram
 
@@ -102,9 +118,13 @@ def test_prompt_cache_and_models():
 
     ok = [t for t in turns if t.status_code < 400]
     assert s.prompt_cache.read_tokens == sum(t.usage.cache_read_tokens for t in ok)
-    assert s.prompt_cache.read_share == pytest.approx(s.prompt_cache.read_tokens / sum(t.usage.prompt_tokens for t in ok))
+    assert s.prompt_cache.read_share == pytest.approx(
+        s.prompt_cache.read_tokens / sum(t.usage.prompt_tokens for t in ok)
+    )
     assert [(m.tier, m.served_model, m.requests) for m in s.models] == [
-        ("large", OPUS, 2), ("small", HAIKU, 4), ("unrouted", OPUS, 1)
+        ("large", OPUS, 2),
+        ("small", HAIKU, 4),
+        ("unrouted", OPUS, 1),
     ]
     assert sum(m.cost_usd for m in s.models) == pytest.approx(s.summary.cost_usd)
 
@@ -121,14 +141,17 @@ def test_latency_percentiles_overall_and_per_model():
     assert opus.model == OPUS
 
 
-@pytest.mark.parametrize("values, p, expected", [
-    ([], 50, None),
-    ([5.0], 95, 5.0),
-    ([1.0, 2.0], 50, 1.0),
-    ([1.0, 2.0], 95, 2.0),
-    ([float(i) for i in range(1, 101)], 95, 95.0),
-    ([float(i) for i in range(1, 101)], 50, 50.0),
-])
+@pytest.mark.parametrize(
+    "values, p, expected",
+    [
+        ([], 50, None),
+        ([5.0], 95, 5.0),
+        ([1.0, 2.0], 50, 1.0),
+        ([1.0, 2.0], 95, 2.0),
+        ([float(i) for i in range(1, 101)], 95, 95.0),
+        ([float(i) for i in range(1, 101)], 50, 50.0),
+    ],
+)
 def test_percentile(values, p, expected):
     assert percentile(values, p) == expected
 
@@ -150,15 +173,18 @@ def test_timeseries_sums_to_totals_and_keeps_empty_buckets():
     assert points[0].t == START.isoformat()
 
 
-@pytest.mark.parametrize("span, expected", [
-    (timedelta(minutes=30), 60),
-    (timedelta(minutes=119), 60),
-    (timedelta(hours=5), 300),
-    (timedelta(days=2), 3600),
-    (timedelta(days=20), 6 * 3600),
-    (timedelta(days=100), 24 * 3600),
-    (timedelta(days=700), 7 * 24 * 3600),
-])
+@pytest.mark.parametrize(
+    "span, expected",
+    [
+        (timedelta(minutes=30), 60),
+        (timedelta(minutes=119), 60),
+        (timedelta(hours=5), 300),
+        (timedelta(days=2), 3600),
+        (timedelta(days=20), 6 * 3600),
+        (timedelta(days=100), 24 * 3600),
+        (timedelta(days=700), 7 * 24 * 3600),
+    ],
+)
 def test_pick_bucket(span, expected):
     assert pick_bucket(START, START + span) == expected
 
@@ -221,8 +247,19 @@ def test_build_stats_on_50k_requests_is_fast():
     for i in range(50_000):
         thread = f"t{i // 50}"
         model, tier = (HAIKU, "small") if i % 3 else (OPUS, "large")
-        turns.append(req(model, 1_000 * (i % 50), 2_000, i * 5, tier=tier, thread=thread, continuation=i % 50 > 0,
-                         ttfb=300, latency=1_000))
+        turns.append(
+            req(
+                model,
+                1_000 * (i % 50),
+                2_000,
+                i * 5,
+                tier=tier,
+                thread=thread,
+                continuation=i % 50 > 0,
+                ttfb=300,
+                latency=1_000,
+            )
+        )
 
     started = time.perf_counter()
     build_stats(turns, PRICING, 0.5, START)

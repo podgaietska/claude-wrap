@@ -119,7 +119,7 @@ def find_turn(messages: list[dict]) -> Turn | None:
     for index in range(len(messages) - 1, -1, -1):
         text = human_text(messages[index])
         if text is not None:
-            is_continuation = any(m.get("role") != "system" for m in messages[index + 1:])
+            is_continuation = any(m.get("role") != "system" for m in messages[index + 1 :])
             return Turn(text=text, index=index, is_continuation=is_continuation)
     return None
 
@@ -157,8 +157,12 @@ class Router:
         turn = find_turn(messages)
         if turn is None:
             return RouteDecision(
-                model=requested_model, routed=False, tier=None,
-                reason="no human message", complexity=None, turn=None,
+                model=requested_model,
+                routed=False,
+                tier=None,
+                reason="no human message",
+                complexity=None,
+                turn=None,
             )
 
         complexity = self.classifier.classify(turn.text, self.config.routing.complexity_threshold)
@@ -174,6 +178,10 @@ class Router:
                     reason += "; escalated, conversation too big for small model"
 
         return RouteDecision(
-            model=self.config.tiers[tier].model, routed=True, tier=tier,
-            reason=reason, complexity=complexity, turn=turn,
+            model=self.config.tiers[tier].model,
+            routed=True,
+            tier=tier,
+            reason=reason,
+            complexity=complexity,
+            turn=turn,
         )
