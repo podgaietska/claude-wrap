@@ -1,7 +1,7 @@
 import pytest
 
-from wrap.config import REPO_ROOT, load_config
-from wrap.telemetry.pricing import ModelPricing, PricingTable
+from wrap.config import load_config
+from wrap.telemetry.pricing import ModelPricing, PricingTable, load_pricing
 from wrap.telemetry.usage import Usage
 
 HAIKU = ModelPricing(input=1.0, output=5.0, cache_read=0.10, cache_write_5m=1.25, cache_write_1h=2.0)
@@ -53,7 +53,7 @@ def test_cache_writes_without_a_split_are_priced_at_5m(table):
 
 def test_shipped_pricing_file_prices_every_configured_tier():
     config = load_config()
-    shipped = PricingTable.load(REPO_ROOT / config.telemetry.pricing_file)
+    shipped = load_pricing(config.telemetry)
 
     for tier in config.tiers.values():
         assert shipped.lookup(tier.model) is not None, tier.model

@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from pathlib import Path
 from urllib.parse import urlencode
 
 import typer
@@ -17,11 +18,11 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from wrap.config import REPO_ROOT, load_config
+from wrap.config import load_config
 from wrap.telemetry import db
 from wrap.telemetry.economics import Economics, analyze
 from wrap.telemetry.logger import format_signed_cost, format_tokens
-from wrap.telemetry.pricing import PricingTable
+from wrap.telemetry.pricing import PricingTable, load_pricing
 from wrap.telemetry.requests import count_kinds
 
 app = typer.Typer(add_completion=False)
@@ -78,7 +79,7 @@ def claude(
     config = load_config()
     host = "127.0.0.1"
 
-    log_path = REPO_ROOT / config.proxy.log_path
+    log_path = Path(config.proxy.log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(log_path, "w")
 
@@ -140,7 +141,7 @@ def claude(
 def logs():
     """Follow the proxy's log from the current (or most recent) `wrap claude` session."""
     config = load_config()
-    log_path = REPO_ROOT / config.proxy.log_path
+    log_path = Path(config.proxy.log_path)
 
     if not log_path.exists():
         console.print(f"[yellow]No log file yet at {log_path} -- run `wrap claude` first.[/yellow]")
@@ -160,12 +161,12 @@ def stats(
 ):
     """Show token usage, cost and routing savings for a `wrap claude` session."""
     config = load_config()
-    db_path = REPO_ROOT / config.telemetry.db_path
+    db_path = Path(config.telemetry.db_path)
     if not db_path.exists():
         console.print(f"[yellow]No telemetry yet at {db_path} -- run `wrap claude` first.[/yellow]")
         raise typer.Exit(1)
 
-    pricing = PricingTable.load(REPO_ROOT / config.telemetry.pricing_file)
+    pricing = load_pricing(config.telemetry)
     conn = db.connect(db_path)
     try:
         if not print_stats(Console(), conn, pricing, session):
@@ -308,7 +309,7 @@ def dashboard(
     port = port or config.dashboard.port
     url = f"http://{host}:{port}/" + (f"?{urlencode({'session': session})}" if session else "")
 
-    db_path = REPO_ROOT / config.telemetry.db_path
+    db_path = Path(config.telemetry.db_path)
     if not db_path.exists():
         console.print(f"[yellow]No telemetry yet at {db_path} -- the page fills in once `wrap claude` runs.[/yellow]")
     if _port_in_use(host, port):
