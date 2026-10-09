@@ -1,15 +1,10 @@
-from datetime import datetime, timedelta, timezone
-
 import pytest
 from rich.console import Console
 
+from tests.helpers import add_turn
 from tests.test_economics import HAIKU, OPUS, PRICING
 from wrap.cli import print_stats
 from wrap.telemetry import db
-from wrap.telemetry.db import TurnRecord
-from wrap.telemetry.usage import Usage
-
-START = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -17,25 +12,6 @@ def conn(tmp_path):
     connection = db.connect(tmp_path / "wrap.db")
     yield connection
     connection.close()
-
-
-def add_turn(conn, session_id, tier, model, cache_read, cache_write, seconds, status=200, thread="t1",
-             continuation=False):
-    usage = Usage(input_tokens=10, output_tokens=500, cache_read_tokens=cache_read,
-                  cache_creation_tokens=cache_write, cache_creation_5m_tokens=cache_write)
-    db.insert_turn(conn, TurnRecord(
-        timestamp=(START + timedelta(seconds=seconds)).isoformat(),
-        session_id=session_id,
-        thread_key=thread,
-        was_tool_continuation=continuation,
-        requested_model=OPUS,
-        model_id=model,
-        served_model=model,
-        tier=tier,
-        status_code=status,
-        usage=usage,
-        cost_usd=PRICING.cost(model, usage) if status < 400 else None,
-    ))
 
 
 def render(conn, session: str) -> tuple[bool, str]:

@@ -58,3 +58,7 @@ telemetry:
   enabled: true
   db_path: data/wrap.db
   pricing_file: config/pricing.yaml
+
+dashboard:
+  port: 8788
+  refresh_seconds: 5 # while the selected session is live

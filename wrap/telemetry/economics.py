@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import statistics
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -240,25 +241,27 @@ def turn_economics(
     )
 
 
-def analyze(turns: list[TurnRecord], pricing: PricingTable) -> Economics:
-    """Totals routing economics over turns, conversation by conversation.
+def iter_turn_economics(
+    turns: list[TurnRecord], pricing: PricingTable
+) -> Iterator[tuple[TurnRecord, TurnEconomics | None]]:
+    """Evaluates every successful turn against its counterfactual, conversation by conversation.
 
     Args:
         turns: Turns ordered oldest first, e.g. from `db.fetch_turns`.
         pricing: Rates for every model involved.
 
-    Returns:
-        The totals. Failed requests and unpriced turns are skipped and counted.
+    Yields:
+        `(turn, economics)` for each successful turn, grouped by
+        conversation and in order within it; `economics` is None if a
+        model has no price. Failed turns are not yielded.
     """
     threads: dict[tuple[str | None, str | None], list[TurnRecord]] = defaultdict(list)
     for turn in turns:
         threads[(turn.session_id, turn.thread_key)].append(turn)
 
-    result = Economics()
     for thread in threads.values():
         uses_1h = any(t.usage.cache_creation_1h_tokens > 0 for t in thread)
-        succeeded = [t for t in thread if t.status_code is not None and t.status_code < 400]
-        result.error_turns += len(thread) - len(succeeded)
+        succeeded = [t for t in thread if succeeded_turn(t)]
         growth = typical_growth([
             turn.usage.cache_creation_tokens
             for previous, turn in zip(succeeded, succeeded[1:])
@@ -267,25 +270,55 @@ def analyze(turns: list[TurnRecord], pricing: PricingTable) -> Economics:
 
         previous: TurnRecord | None = None
         for turn in succeeded:
-            economics = turn_economics(turn, previous, pricing, uses_1h, growth)
+            yield turn, turn_economics(turn, previous, pricing, uses_1h, growth)
             previous = turn
-            if economics is None:
-                result.unpriced_turns += 1
-                continue
 
-            result.requested_models.add(turn.requested_model)
-            result.counterfactual_cost += economics.counterfactual_cost
-            result.actual_cost += economics.actual_cost
-            result.saved_by_model += economics.saved_by_model
-            result.cache_penalty += economics.cache_penalty
-            result.recached_tokens += economics.recached_tokens
-            if economics.switched:
-                result.switches += 1
-            elif economics.within_ttl:
-                result.check_eligible += 1
-                if _matches(economics.counterfactual_usage.cache_read_tokens, turn.usage.cache_read_tokens):
-                    result.check_matched += 1
+
+def analyze(turns: list[TurnRecord], pricing: PricingTable, count_from: datetime | None = None) -> Economics:
+    """Totals routing economics over turns (see `iter_turn_economics`).
+
+    Args:
+        turns: Turns ordered oldest first, e.g. from `db.fetch_turns`.
+        pricing: Rates for every model involved.
+        count_from: Only total turns at or after this time; earlier turns
+            are context, so the first counted turn of a conversation is
+            still compared with the turn before it.
+
+    Returns:
+        The totals. Failed requests and unpriced turns are skipped and counted.
+    """
+    counted = [t for t in turns if is_counted(t, count_from)]
+    result = Economics(error_turns=sum(1 for t in counted if not succeeded_turn(t)))
+    for turn, economics in iter_turn_economics(turns, pricing):
+        if not is_counted(turn, count_from):
+            continue
+        if economics is None:
+            result.unpriced_turns += 1
+            continue
+
+        result.requested_models.add(turn.requested_model)
+        result.counterfactual_cost += economics.counterfactual_cost
+        result.actual_cost += economics.actual_cost
+        result.saved_by_model += economics.saved_by_model
+        result.cache_penalty += economics.cache_penalty
+        result.recached_tokens += economics.recached_tokens
+        if economics.switched:
+            result.switches += 1
+        elif economics.within_ttl:
+            result.check_eligible += 1
+            if _matches(economics.counterfactual_usage.cache_read_tokens, turn.usage.cache_read_tokens):
+                result.check_matched += 1
     return result
+
+
+def is_counted(turn: TurnRecord, count_from: datetime | None) -> bool:
+    """True if a turn is at or after `count_from` (always, when it's None)."""
+    return count_from is None or datetime.fromisoformat(turn.timestamp) >= count_from
+
+
+def succeeded_turn(turn: TurnRecord) -> bool:
+    """True if the request got a successful response from the API."""
+    return turn.status_code is not None and turn.status_code < 400
 
 
 def _within_ttl(previous: TurnRecord, turn: TurnRecord, uses_1h: bool) -> bool:

@@ -1,6 +1,6 @@
-# prompt-router
+# claude-wrap
 
-A transparent cost-aware model router for [Claude Code](https://claude.com/claude-code). Its CLI, `wrap`, starts a local proxy, points a real Claude Code session at it, and routes each turn to a small/cheap model or a large/capable one based on how complex the question looks — with no change to how you actually use Claude Code.
+A model router for [Claude Code](https://claude.com/claude-code). `wrap claude` runs a real Claude Code session through a local proxy that sends each question to a cheaper or more capable model, depending on how complex it looks. `wrap stats` and a local dashboard show what that saves, including the cache misses that switching models causes.
 
 ## How it works
 
@@ -11,16 +11,6 @@ Claude Code honors the `ANTHROPIC_BASE_URL` environment variable (Anthropic's ow
 3. On every `POST /v1/messages`, the proxy finds the question that started the current turn, scores its complexity with a zero-cost heuristic, and rewrites the `model` field before forwarding to the real Anthropic API. Every request in a turn, tool-result continuations included, goes to the same model; requests with no typed question keep the model Claude Code asked for. Every other request/path is relayed as-is.
 
 Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's nothing global to undo — just exit the session.
-
-## Status
-
-**Phase A (routing-only passthrough proxy) is built and verified** against the real Claude Code CLI and Anthropic API — see `wrap/proxy/server.py` and `wrap/routing/`.
-
-**Phase B (per-turn cost/latency telemetry in SQLite, `wrap stats`) is built** — see `wrap/telemetry/`. Not yet verified end-to-end against the real API.
-
-Not yet built:
-- **Phase C** — semantic response caching.
-- **Phase D** — a local dashboard (`wrap dashboard`) visualizing cost/latency/cache-hit stats.
 
 ## Setup
 
@@ -50,6 +40,18 @@ Every API request is recorded in `data/wrap.db` (`turn_log` table) whatever the 
 One question in Claude Code is usually several API requests (the question, then a round trip per tool call), plus background calls such as session titles, so `wrap stats` counts requests and breaks them down into new messages, tool calls and side requests.
 
 `wrap stats` reports **net** routing savings: what the session would have cost had every request stayed on the model Claude Code asked for, minus what it cost. Prompt caches belong to one model, so switching a long conversation to a cheaper model makes that model write the whole prompt to its cache again — which can cost more than the cheaper model saves. The savings are split into "saved by cheaper models" and "lost to cache misses" so you can see which way it went. It assumes the requested model would have produced the same output in the same number of requests.
+
+### Dashboard
+
+```bash
+wrap dashboard                   # serves http://127.0.0.1:8788 and opens it in a browser
+wrap dashboard --session all     # open on every session; or a session ID
+wrap dashboard --port 9000 --no-open
+```
+
+The dashboard is the same numbers as `wrap stats`, drawn: total cost and net savings, a waterfall of what cheaper models saved against what cache misses cost, cost per tier over time against the always-the-requested-model baseline, a histogram of complexity scores around the routing threshold, per-model tokens, prompt-cache reads and latency percentiles, and a table of recent requests (no message content is stored, so none is shown).
+
+It runs as its own process and reads `data/wrap.db` read-only, so start it in a second terminal during a `wrap claude` session — it refreshes every 5 seconds while the session is live — or any time afterwards. It listens on 127.0.0.1 only and makes no network requests (Chart.js is vendored). Times are shown in your local time zone; daily buckets on the cost chart break at UTC midnight. Port and refresh interval are under `dashboard:` in `config/config.yaml`.
 
 ## Configuration
 

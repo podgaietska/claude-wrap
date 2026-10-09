@@ -6,9 +6,11 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
-from collections import Counter
+import webbrowser
+from urllib.parse import urlencode
 
 import typer
 from rich import box
@@ -20,6 +22,7 @@ from wrap.telemetry import db
 from wrap.telemetry.economics import Economics, analyze
 from wrap.telemetry.logger import format_signed_cost, format_tokens
 from wrap.telemetry.pricing import PricingTable
+from wrap.telemetry.requests import count_kinds
 
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
@@ -114,7 +117,9 @@ def claude(
             f"session: {session_id}\n"
             f"[dim]Logs: {log_path} -- run `wrap logs` in another terminal to follow them live"
             f"{'' if debug else ' (start with --debug for per-request costs)'}. "
-            f"Run `wrap stats` afterwards for this session's costs.[/dim]"
+            f"Run `wrap stats` afterwards for this session's costs.[/dim]\n"
+            f"[dim]Dashboard: run `wrap dashboard` in another terminal "
+            f"(http://{host}:{config.dashboard.port}).[/dim]"
         )
 
         env = os.environ.copy()
@@ -183,8 +188,7 @@ def print_stats(out: Console, conn: sqlite3.Connection, pricing: PricingTable, s
         console.print("[yellow]No requests logged yet -- run `wrap claude` first.[/yellow]")
         return False
 
-    all_sessions = session == "all"
-    session_id = db.latest_session_id(conn) if session == "last" else None if all_sessions else session
+    session_id, all_sessions = db.resolve_session(conn, session)
     turns = db.fetch_turns(conn, session_id, all_sessions)
     if not turns:
         console.print(f"[yellow]No requests logged for session {session_id}.[/yellow]")
@@ -229,13 +233,7 @@ def print_stats(out: Console, conn: sqlite3.Connection, pricing: PricingTable, s
 
 
 def _breakdown(turns: list[db.TurnRecord]) -> str:
-    """Splits requests into new messages, tool calls and side requests.
-
-    One question in Claude Code is usually several API requests: the
-    question, then a round trip per tool call. A session's main
-    conversation is taken to be the one with the most requests; the rest
-    are side requests (background calls such as session titles, and
-    subagents).
+    """Splits requests into new messages, tool calls and side requests (see `wrap.telemetry.requests`).
 
     Args:
         turns: The requests to describe.
@@ -243,23 +241,8 @@ def _breakdown(turns: list[db.TurnRecord]) -> str:
     Returns:
         E.g. "5 new messages, 8 tool calls, 2 side requests".
     """
-    sizes = Counter((t.session_id, t.thread_key) for t in turns)
-    main_threads = {}
-    for (session_id, thread_key), size in sizes.items():
-        if size > sizes.get((session_id, main_threads.get(session_id)), 0):
-            main_threads[session_id] = thread_key
-
-    tool_calls = new_messages = side = 0
-    for t in turns:
-        if t.thread_key != main_threads[t.session_id]:
-            side += 1
-        elif t.was_tool_continuation:
-            tool_calls += 1
-        elif t.tier in ("small", "large"):
-            new_messages += 1
-        else:
-            side += 1
-    parts = [(new_messages, "new message"), (tool_calls, "tool call"), (side, "side request")]
+    counts = count_kinds(turns)
+    parts = [(counts["new_message"], "new message"), (counts["tool_call"], "tool call"), (counts["side"], "side request")]
     return ", ".join(f"{n} {label}{'' if n == 1 else 's'}" for n, label in parts)
 
 
@@ -297,10 +280,54 @@ def _print_economics(out: Console, economics: Economics) -> None:
 
 
 @app.command()
-def dashboard():
-    """View cost/latency stats. (Not built yet -- Phase D.)"""
-    console.print("[yellow]wrap dashboard[/yellow] isn't built yet -- coming in a later phase.")
-    raise typer.Exit(1)
+def dashboard(
+    port: int = typer.Option(None, "--port", help="Port to serve on (default: dashboard.port in the config)."),
+    session: str = typer.Option(None, "--session", help="Open on `last`, `all`, or a session ID."),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't open a browser."),
+):
+    """Serve a local dashboard of cost, routing savings and latency.
+
+    Reads the telemetry database read-only, so it can run during a `wrap
+    claude` session (it refreshes live) or after one. Runs until Ctrl-C.
+
+    Raises:
+        typer.Exit: With code 1 if the port is already in use.
+    """
+    import uvicorn
+
+    config = load_config()
+    host = "127.0.0.1"
+    port = port or config.dashboard.port
+    url = f"http://{host}:{port}/" + (f"?{urlencode({'session': session})}" if session else "")
+
+    db_path = REPO_ROOT / config.telemetry.db_path
+    if not db_path.exists():
+        console.print(f"[yellow]No telemetry yet at {db_path} -- the page fills in once `wrap claude` runs.[/yellow]")
+    if _port_in_use(host, port):
+        console.print(f"[red]Port {port} is in use -- is a dashboard already running? Try {url}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]wrap dashboard[/green] on {url} -- Ctrl-C to stop")
+    if not no_open:
+        threading.Thread(target=_open_when_up, args=(host, port, url), daemon=True).start()
+    uvicorn.run(
+        "wrap.dashboard.app:create_dashboard_app", factory=True, host=host, port=port, log_level="warning"
+    )
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    """True if something already accepts connections on the port."""
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _open_when_up(host: str, port: int, url: str) -> None:
+    """Opens the dashboard in a browser once the server accepts connections."""
+    if _wait_for_port(host, port):
+        webbrowser.open(url)
 
 
 if __name__ == "__main__":

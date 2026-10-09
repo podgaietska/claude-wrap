@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from wrap.telemetry.db import TurnRecord
-from wrap.telemetry.economics import analyze, turn_economics
+from wrap.telemetry.economics import analyze, iter_turn_economics, turn_economics
 from wrap.telemetry.pricing import ModelPricing, PricingTable
 from wrap.telemetry.usage import Usage
 
@@ -229,3 +229,25 @@ def test_switch_with_no_typical_growth_assumes_no_new_content():
     economics = turn_economics(switched, previous, PRICING, uses_1h=False)
 
     assert economics.counterfactual_usage.cache_creation_tokens == 0
+
+
+def test_per_turn_economics_add_up_to_the_totals():
+    turns = [
+        turn(OPUS, 0, 150_000, seconds=0),
+        turn(HAIKU, 0, 150_000, seconds=60),
+        turn(HAIKU, 150_000, 2_000, seconds=90),
+        turn(HAIKU, 0, 0, seconds=95, status=529),
+        turn(OPUS, 0, 900, seconds=5, thread="title"),
+        turn(OPUS, 152_000, 3_000, seconds=120),
+    ]
+
+    totals = analyze(turns, PRICING)
+    per_turn = [e for _, e in iter_turn_economics(turns, PRICING)]
+
+    assert len(per_turn) == 5
+    assert sum(e.actual_cost for e in per_turn) == pytest.approx(totals.actual_cost)
+    assert sum(e.counterfactual_cost for e in per_turn) == pytest.approx(totals.counterfactual_cost)
+    assert sum(e.saved_by_model for e in per_turn) == pytest.approx(totals.saved_by_model)
+    assert sum(e.cache_penalty for e in per_turn) == pytest.approx(totals.cache_penalty)
+    assert sum(e.switched for e in per_turn) == totals.switches == 2
+    assert totals.error_turns == 1
