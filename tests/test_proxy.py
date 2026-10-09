@@ -36,13 +36,13 @@ def make_config(tmp_path: Path | None = None) -> Config:
     upstream URL (mocked per-test via `respx`).
 
     Telemetry is on only when `tmp_path` is given, writing to a database
-    there, so tests never touch `data/wrap.db`.
+    there; otherwise telemetry is off.
     """
     if tmp_path is not None:
         (tmp_path / "pricing.yaml").write_text(TEST_PRICING)
         telemetry = TelemetryConfig(db_path=str(tmp_path / "wrap.db"), pricing_file=str(tmp_path / "pricing.yaml"))
     else:
-        telemetry = TelemetryConfig(db_path="data/wrap.db", pricing_file="config/pricing.yaml", enabled=False)
+        telemetry = TelemetryConfig(db_path="unused.db", enabled=False)
     return Config(
         tiers={"small": TierConfig(model="small-model"), "large": TierConfig(model="large-model")},
         models={
@@ -52,7 +52,7 @@ def make_config(tmp_path: Path | None = None) -> Config:
         },
         routing=RoutingConfig(strategy="heuristic", complexity_threshold=0.5),
         cache=CacheConfig(enabled=False, similarity_threshold=0.92, embedding_model="x"),
-        proxy=ProxyConfig(port=8787, upstream_base_url="https://api.anthropic.com", log_path="data/proxy.log"),
+        proxy=ProxyConfig(port=8787, upstream_base_url="https://api.anthropic.com", log_path="proxy.log"),
         telemetry=telemetry,
     )
 

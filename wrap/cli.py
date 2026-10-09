@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 import socket
@@ -10,22 +11,58 @@ import threading
 import time
 import uuid
 import webbrowser
+from pathlib import Path
 from urllib.parse import urlencode
 
 import typer
+import yaml
 from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from wrap.config import REPO_ROOT, load_config
+from wrap import __version__, paths
+from wrap.config import load_config, user_config_path
 from wrap.telemetry import db
 from wrap.telemetry.economics import Economics, analyze
 from wrap.telemetry.logger import format_signed_cost, format_tokens
-from wrap.telemetry.pricing import PricingTable
+from wrap.telemetry.pricing import PricingTable, load_pricing, user_pricing_path
 from wrap.telemetry.requests import count_kinds
 
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
+
+STARTER_CONFIG = """\
+# claude-wrap settings. Only what you set here changes; everything else comes
+# from the packaged defaults (`wrap config --defaults` prints them), so new
+# models and fixes in later releases still reach you. Uncomment to override.
+
+# tiers:
+#   small:
+#     model: claude-haiku-4-5-20251001
+#   large:
+#     model: claude-sonnet-5
+
+# routing:
+#   complexity_threshold: 0.5   # score >= threshold routes to "large"
+
+# proxy:
+#   port: 8787
+"""
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"claude-wrap {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False, "--version", callback=_print_version, is_eager=True, help="Show the version and exit."
+    ),
+):
+    """Route Claude Code requests to a cheaper or more capable model, and show what it saves."""
 
 
 def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
@@ -78,7 +115,7 @@ def claude(
     config = load_config()
     host = "127.0.0.1"
 
-    log_path = REPO_ROOT / config.proxy.log_path
+    log_path = Path(config.proxy.log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(log_path, "w")
 
@@ -140,7 +177,7 @@ def claude(
 def logs():
     """Follow the proxy's log from the current (or most recent) `wrap claude` session."""
     config = load_config()
-    log_path = REPO_ROOT / config.proxy.log_path
+    log_path = Path(config.proxy.log_path)
 
     if not log_path.exists():
         console.print(f"[yellow]No log file yet at {log_path} -- run `wrap claude` first.[/yellow]")
@@ -160,12 +197,12 @@ def stats(
 ):
     """Show token usage, cost and routing savings for a `wrap claude` session."""
     config = load_config()
-    db_path = REPO_ROOT / config.telemetry.db_path
+    db_path = Path(config.telemetry.db_path)
     if not db_path.exists():
         console.print(f"[yellow]No telemetry yet at {db_path} -- run `wrap claude` first.[/yellow]")
         raise typer.Exit(1)
 
-    pricing = PricingTable.load(REPO_ROOT / config.telemetry.pricing_file)
+    pricing = load_pricing(config.telemetry)
     conn = db.connect(db_path)
     try:
         if not print_stats(Console(), conn, pricing, session):
@@ -308,7 +345,7 @@ def dashboard(
     port = port or config.dashboard.port
     url = f"http://{host}:{port}/" + (f"?{urlencode({'session': session})}" if session else "")
 
-    db_path = REPO_ROOT / config.telemetry.db_path
+    db_path = Path(config.telemetry.db_path)
     if not db_path.exists():
         console.print(f"[yellow]No telemetry yet at {db_path} -- the page fills in once `wrap claude` runs.[/yellow]")
     if _port_in_use(host, port):
@@ -338,3 +375,57 @@ def _open_when_up(host: str, port: int, url: str) -> None:
 
 if __name__ == "__main__":
     app()
+
+
+@app.command("config")
+def show_config(
+    init: bool = typer.Option(False, "--init", help="Create a starter config.yaml in the config directory."),
+    defaults: bool = typer.Option(False, "--defaults", help="Print the packaged default config."),
+    effective: bool = typer.Option(
+        False, "--effective", help="Print the config wrap runs with: the defaults with your overrides merged in."
+    ),
+):
+    """Show where wrap reads its config from and writes its data to.
+
+    Raises:
+        typer.Exit: With code 1 if `--init` would overwrite an existing file.
+    """
+    user_config = user_config_path()
+    if defaults:
+        typer.echo((paths.DEFAULTS_DIR / user_config.name).read_text(), nl=False)
+        return
+    if effective:
+        sources = "packaged defaults" + (f" + {user_config}" if user_config.exists() else "")
+        settings = _drop_none(dataclasses.asdict(load_config()))
+        typer.echo(f"# {sources}\n" + yaml.safe_dump(settings, sort_keys=False), nl=False)
+        return
+    if init:
+        if user_config.exists():
+            console.print(f"[yellow]{user_config} already exists -- leaving it as is.[/yellow]")
+            raise typer.Exit(1)
+        user_config.parent.mkdir(parents=True, exist_ok=True)
+        user_config.write_text(STARTER_CONFIG)
+        console.print(f"[green]Created {user_config}[/green]")
+        return
+
+    config = load_config()
+    user_pricing = user_pricing_path(config.telemetry)
+    rows = [
+        ("Version", __version__),
+        ("Config", f"{user_config}" + ("" if user_config.exists() else "  (none; create with `wrap config --init`)")),
+        ("Pricing", f"{user_pricing}" + ("" if user_pricing.exists() else "  (none; packaged prices only)")),
+        ("Defaults", str(paths.DEFAULTS_DIR)),
+        ("Database", config.telemetry.db_path),
+        ("Log", config.proxy.log_path),
+    ]
+    for label, value in rows:
+        typer.echo(f"{label:<9} {value}")
+
+
+def _drop_none(value):
+    """Removes None (unknown) values from nested mappings, as a config file would leave them out."""
+    if isinstance(value, dict):
+        return {k: _drop_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, tuple | list):
+        return [_drop_none(v) for v in value]
+    return value

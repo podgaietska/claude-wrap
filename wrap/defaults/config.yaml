@@ -51,13 +51,13 @@ cache:
 proxy:
   port: 8787
   upstream_base_url: https://api.anthropic.com
-  log_path: data/proxy.log
+  log_path: proxy.log # relative paths are under the data directory (`wrap config` shows it)
   log_level: info # debug adds a per-turn tokens/cost line; or run `wrap claude --debug`
 
 telemetry:
   enabled: true
-  db_path: data/wrap.db
-  pricing_file: config/pricing.yaml
+  db_path: wrap.db
+  # pricing_file: my-pricing.yaml # merged over the packaged prices; default: pricing.yaml in the config directory
 
 dashboard:
   port: 8788

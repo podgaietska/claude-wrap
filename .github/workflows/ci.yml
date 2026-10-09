@@ -48,9 +48,30 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest
 
+  # Builds the package and runs it from a clean install (see
+  # scripts/smoke_test.sh) to catch files missing from the wheel.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - run: scripts/smoke_test.sh dist/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # The one check branch protection requires, so the job list can change
+  # without touching repo settings. A skipped required check counts as
+  # passed, hence `always()` and the explicit result check.
   ci-ok:
     if: always()
-    needs: [lint, test]
+    needs: [lint, test, package]
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

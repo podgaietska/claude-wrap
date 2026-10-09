@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
@@ -19,14 +20,14 @@ from rich.markup import escape
 from wrap.adapt.adapters import adapt_request
 from wrap.adapt.error_rules import match_error
 from wrap.adapt.registry import CapabilityRegistry
-from wrap.config import REPO_ROOT, Config, load_config
+from wrap.config import Config, load_config
 from wrap.proxy.describe import describe_decision, describe_request
 from wrap.proxy.sse import StreamUsageParser, parse_message_body
 from wrap.proxy.upstream import filtered_headers, upstream_request_headers
 from wrap.routing.router import RouteDecision, Router
 from wrap.telemetry.db import TurnRecord
 from wrap.telemetry.logger import TurnLogger, thread_key
-from wrap.telemetry.pricing import PricingTable
+from wrap.telemetry.pricing import load_pricing
 from wrap.telemetry.usage import Usage
 
 _ERROR_LOG_CHARS = 500
@@ -59,7 +60,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     """Builds the proxy's FastAPI app: routed `/v1/messages`, passthrough elsewhere.
 
     Args:
-        config: Defaults to loading `config/config.yaml`.
+        config: Defaults to `load_config()`.
 
     Returns:
         A configured `FastAPI` app.
@@ -125,8 +126,8 @@ def _create_turn_logger(config: Config) -> TurnLogger | None:
     if not config.telemetry.enabled:
         return None
     try:
-        pricing = PricingTable.load(REPO_ROOT / config.telemetry.pricing_file)
-        return TurnLogger(REPO_ROOT / config.telemetry.db_path, pricing, os.environ.get("WRAP_SESSION_ID"))
+        pricing = load_pricing(config.telemetry)
+        return TurnLogger(Path(config.telemetry.db_path), pricing, os.environ.get("WRAP_SESSION_ID"))
     except Exception as exc:
         logger.warning("[yellow]telemetry disabled: %s[/yellow]", exc)
         return None

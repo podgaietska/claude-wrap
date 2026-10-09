@@ -4,9 +4,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
+from wrap import paths
+from wrap.config import TelemetryConfig, merge, read_yaml
 from wrap.telemetry.usage import Usage
+
+PRICING_FILE = "pricing.yaml"
 
 logger = logging.getLogger("wrap.proxy")
 
@@ -70,18 +72,20 @@ class PricingTable:
         self._warned: set[str] = set()
 
     @classmethod
-    def load(cls, path: Path) -> PricingTable:
-        """Loads a pricing YAML file with a top-level `models` mapping.
+    def load(cls, *files: Path) -> PricingTable:
+        """Loads pricing YAML files with a top-level `models` mapping, each merged over the last.
 
         Args:
-            path: Path to the pricing file.
+            *files: Paths to the pricing files; a later file's entries
+                override an earlier one's, field by field.
 
         Returns:
             The parsed `PricingTable`.
         """
-        with open(path) as f:
-            raw = yaml.safe_load(f)
-        return cls({model: ModelPricing(**rates) for model, rates in raw["models"].items()})
+        raw: dict = {}
+        for path in files:
+            raw = merge(raw, read_yaml(path))
+        return cls({model: ModelPricing(**rates) for model, rates in raw.get("models", {}).items()})
 
     def lookup(self, model: str | None) -> ModelPricing | None:
         """Finds a model's rates: exact ID first, then the longest matching prefix.
@@ -120,3 +124,34 @@ class PricingTable:
                 logger.warning("[yellow]no pricing for %s -- add it to the pricing file[/yellow]", model)
             return None
         return rates.cost(usage)
+
+
+def user_pricing_path(telemetry: TelemetryConfig) -> Path:
+    """The pricing file merged over the packaged prices (it may not exist).
+
+    Args:
+        telemetry: The telemetry config; its `pricing_file`, if set.
+
+    Returns:
+        `telemetry.pricing_file`, else `pricing.yaml` in the config directory.
+    """
+    return Path(telemetry.pricing_file) if telemetry.pricing_file else paths.config_dir() / PRICING_FILE
+
+
+def load_pricing(telemetry: TelemetryConfig) -> PricingTable:
+    """Loads the packaged prices with the user's pricing file merged over them.
+
+    Args:
+        telemetry: The telemetry config.
+
+    Returns:
+        The merged `PricingTable`.
+
+    Raises:
+        FileNotFoundError: If `telemetry.pricing_file` is set but doesn't exist.
+    """
+    user = user_pricing_path(telemetry)
+    files = [paths.DEFAULTS_DIR / PRICING_FILE]
+    if telemetry.pricing_file or user.exists():
+        files.append(user)
+    return PricingTable.load(*files)

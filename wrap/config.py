@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
+from wrap import paths
+
+CONFIG_FILE = "config.yaml"
 
 
 @dataclass
@@ -103,8 +105,8 @@ class ProxyConfig:
         port: Port the proxy listens on.
         upstream_base_url: Base URL of the real Anthropic API the proxy
             forwards requests to.
-        log_path: Path (relative to the repo root) the proxy's log output
-            is written to, so it doesn't interleave with the wrapped
+        log_path: Path the proxy's log output is written to (relative
+            paths are under the data directory, see `wrap.paths`), so it doesn't interleave with the wrapped
             Claude Code session's own terminal output. Read live with
             `wrap logs`.
         log_level: "info" logs each routing decision; "debug" adds a
@@ -123,15 +125,17 @@ class TelemetryConfig:
     """Settings for per-turn cost/latency logging.
 
     Attributes:
-        db_path: Path (relative to the repo root) to the SQLite database
-            file used for telemetry. Read with `wrap stats`.
-        pricing_file: Path (relative to the repo root) to the YAML file
-            mapping model IDs to per-token pricing.
+        db_path: Path to the SQLite database file used for telemetry
+            (relative paths are under the data directory). Read with
+            `wrap stats`.
+        pricing_file: A pricing YAML file merged over the packaged
+            prices (relative paths are under the config directory). None
+            uses `pricing.yaml` in the config directory if it exists.
         enabled: Whether the proxy records turns.
     """
 
     db_path: str
-    pricing_file: str
+    pricing_file: str | None = None
     enabled: bool = True
 
 
@@ -174,34 +178,73 @@ class Config:
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
 
 
-def load_config(path: Path | None = None) -> Config:
-    """Loads and parses the YAML config file into a `Config` object.
+def merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merges `override` over `base`: nested mappings merge, anything else is replaced.
 
     Args:
-        path: Path to the config YAML file. Defaults to
-            `config/config.yaml` at the repo root.
+        base: The defaults.
+        override: The user's settings; only the keys being changed.
+
+    Returns:
+        A new mapping; neither argument is modified.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def read_yaml(path: Path) -> dict[str, Any]:
+    """Reads a YAML mapping; an empty file is an empty mapping."""
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def user_config_path() -> Path:
+    """Where the user's config overrides are read from (the file may not exist)."""
+    return paths.config_dir() / CONFIG_FILE
+
+
+def load_config(path: Path | None = None) -> Config:
+    """Loads the packaged defaults, merges the user's config over them, and parses the result.
+
+    Relative `log_path` and `db_path` values are resolved under the data
+    directory, and a relative `pricing_file` under the config directory,
+    so every path on the returned `Config` is absolute.
+
+    Args:
+        path: The user config file to merge over the defaults. Defaults
+            to `config.yaml` in the config directory, skipped if it
+            doesn't exist.
 
     Returns:
         The parsed `Config`.
 
     Raises:
-        FileNotFoundError: If `path` does not exist.
-        KeyError: If the YAML is missing one of the required top-level
-            sections (`tiers`, `models`, `routing`, `cache`, `proxy`,
-            `telemetry`). `dashboard` is optional.
+        FileNotFoundError: If an explicit `path` does not exist.
+        TypeError: If a section has an unknown key.
     """
-    path = path or DEFAULT_CONFIG_PATH
-    with open(path) as f:
-        raw = yaml.safe_load(f)
+    raw = read_yaml(paths.DEFAULTS_DIR / CONFIG_FILE)
+    user_path = path or user_config_path()
+    if path is not None or user_path.exists():
+        raw = merge(raw, read_yaml(user_path))
 
-    tiers = {name: TierConfig(**data) for name, data in raw["tiers"].items()}
-    models = {model: ModelCapabilities.from_dict(data) for model, data in raw["models"].items()}
+    proxy = ProxyConfig(**raw["proxy"])
+    proxy.log_path = str(paths.resolve(proxy.log_path, paths.data_dir()))
+    telemetry = TelemetryConfig(**raw["telemetry"])
+    telemetry.db_path = str(paths.resolve(telemetry.db_path, paths.data_dir()))
+    if telemetry.pricing_file:
+        telemetry.pricing_file = str(paths.resolve(telemetry.pricing_file, paths.config_dir()))
+
     return Config(
-        tiers=tiers,
-        models=models,
+        tiers={name: TierConfig(**data) for name, data in raw["tiers"].items()},
+        models={model: ModelCapabilities.from_dict(data) for model, data in raw["models"].items()},
         routing=RoutingConfig(**raw["routing"]),
         cache=CacheConfig(**raw["cache"]),
-        proxy=ProxyConfig(**raw["proxy"]),
-        telemetry=TelemetryConfig(**raw["telemetry"]),
+        proxy=proxy,
+        telemetry=telemetry,
         dashboard=DashboardConfig(**(raw.get("dashboard") or {})),
     )

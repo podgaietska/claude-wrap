@@ -10,11 +10,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from wrap.config import REPO_ROOT, Config, load_config
+from wrap.config import Config, load_config
 from wrap.dashboard.queries import build_stats, request_rows
 from wrap.telemetry import db
 from wrap.telemetry.economics import TTL_1H_SECONDS
-from wrap.telemetry.pricing import PricingTable
+from wrap.telemetry.pricing import load_pricing
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_REQUEST_ROWS = 1000
@@ -31,14 +31,14 @@ def create_dashboard_app(config: Config | None = None) -> FastAPI:
     run beside a `wrap claude` proxy that is writing to the same database.
 
     Args:
-        config: Defaults to loading `config/config.yaml`.
+        config: Defaults to `load_config()`.
 
     Returns:
         A configured `FastAPI` app.
     """
     config = config or load_config()
-    db_path = REPO_ROOT / config.telemetry.db_path
-    pricing = PricingTable.load(REPO_ROOT / config.telemetry.pricing_file)
+    db_path = Path(config.telemetry.db_path)
+    pricing = load_pricing(config.telemetry)
 
     app = FastAPI(title="wrap dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 
