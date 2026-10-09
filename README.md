@@ -2,6 +2,8 @@
 
 A model router for [Claude Code](https://claude.com/claude-code). `wrap claude` runs a real Claude Code session through a local proxy that sends each question to a cheaper or more capable model, depending on how complex it looks. `wrap stats` and a local dashboard show what that saves, including the cache misses that switching models causes.
 
+claude-wrap is an independent community project, not affiliated with or endorsed by Anthropic.
+
 ## How it works
 
 Claude Code honors the `ANTHROPIC_BASE_URL` environment variable (Anthropic's own documented mechanism for LLM gateways). `wrap claude`:
@@ -12,9 +14,18 @@ Claude Code honors the `ANTHROPIC_BASE_URL` environment variable (Anthropic's ow
 
 Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's nothing global to undo — just exit the session.
 
-## Setup
+## Install
+
+Needs Python 3.10+ and [Claude Code](https://claude.com/claude-code) on your `PATH`, on macOS or Linux.
 
 ```bash
+pipx install git+https://github.com/podgaietska/claude-wrap
+```
+
+`wrap --version` shows what you have. To work on wrap itself:
+
+```bash
+git clone https://github.com/podgaietska/claude-wrap && cd claude-wrap
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -26,7 +37,7 @@ pip install -e ".[dev]"
 wrap claude
 ```
 
-This starts the proxy on `127.0.0.1:8787` (configurable in `config/config.yaml`) and launches Claude Code through it. The banner prints a session ID.
+This starts the proxy on `127.0.0.1:8787` (configurable, see [Configuration](#configuration)) and launches Claude Code through it. The banner prints a session ID.
 
 ```bash
 wrap logs                  # in another terminal: follow routing decisions live
@@ -35,7 +46,7 @@ wrap stats                 # after (or during) a session: tokens and cost per ti
 wrap stats --session all   # or a session ID from the banner
 ```
 
-Every API request is recorded in `data/wrap.db` (`turn_log` table) whatever the log level, priced with `config/pricing.yaml`.
+Every API request is recorded in the telemetry database (`wrap.db`, `turn_log` table; `wrap config` shows where) whatever the log level, priced with the packaged prices plus any `pricing.yaml` of your own.
 
 One question in Claude Code is usually several API requests (the question, then a round trip per tool call), plus background calls such as session titles, so `wrap stats` counts requests and breaks them down into new messages, tool calls and side requests.
 
@@ -51,11 +62,29 @@ wrap dashboard --port 9000 --no-open
 
 The dashboard is the same numbers as `wrap stats`, drawn: total cost and net savings, a waterfall of what cheaper models saved against what cache misses cost, cost per tier over time against the always-the-requested-model baseline, a histogram of complexity scores around the routing threshold, per-model tokens, prompt-cache reads and latency percentiles, and a table of recent requests (no message content is stored, so none is shown).
 
-It runs as its own process and reads `data/wrap.db` read-only, so start it in a second terminal during a `wrap claude` session — it refreshes every 5 seconds while the session is live — or any time afterwards. It listens on 127.0.0.1 only and makes no network requests (Chart.js is vendored). Times are shown in your local time zone; daily buckets on the cost chart break at UTC midnight. Port and refresh interval are under `dashboard:` in `config/config.yaml`.
+It runs as its own process and reads the telemetry database read-only, so start it in a second terminal during a `wrap claude` session — it refreshes every 5 seconds while the session is live — or any time afterwards. It listens on 127.0.0.1 only and makes no network requests (Chart.js is vendored). Times are shown in your local time zone; daily buckets on the cost chart break at UTC midnight. Port and refresh interval are under `dashboard:` in the config.
 
 ## Configuration
 
-`config/config.yaml`:
+wrap ships with defaults ([`wrap/defaults/config.yaml`](wrap/defaults/config.yaml)), and reads your own settings from `~/.config/claude-wrap/config.yaml`. Your file only needs what you change: it's merged over the defaults key by key, so models and prices added in later releases still reach you.
+
+```bash
+wrap config            # where config, pricing, the database and the log live
+wrap config --init     # create a commented starter config.yaml
+wrap config --defaults # print the packaged defaults
+```
+
+For example, to route the large tier to Opus 5.5:
+
+```yaml
+tiers:
+  large:
+    model: claude-opus-5-5
+```
+
+`pricing.yaml` in the same directory is merged over the packaged prices the same way, for models wrap doesn't know or rates that differ for you. The database and log live in `~/.local/share/claude-wrap/`. `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are respected, and `WRAP_CONFIG_DIR` / `WRAP_DATA_DIR` override both locations.
+
+The defaults look like this:
 
 ```yaml
 tiers:
