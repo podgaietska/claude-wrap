@@ -21,6 +21,7 @@ dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
     "respx>=0.21",
+    "ruff==0.17.0",
 ]
 
 [project.scripts]
@@ -35,3 +36,12 @@ packages = ["wrap"]
 
 [tool.pytest.ini_options]
 markers = ["slow: timing benchmarks; deselect with -m 'not slow'"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# The formatter wraps code; lines it leaves long are strings and comments.
+ignore = ["E501"]
