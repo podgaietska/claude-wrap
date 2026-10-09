@@ -69,9 +69,10 @@ It runs as its own process and reads the telemetry database read-only, so start 
 wrap ships with defaults ([`wrap/defaults/config.yaml`](wrap/defaults/config.yaml)), and reads your own settings from `~/.config/claude-wrap/config.yaml`. Your file only needs what you change: it's merged over the defaults key by key, so models and prices added in later releases still reach you.
 
 ```bash
-wrap config            # where config, pricing, the database and the log live
-wrap config --init     # create a commented starter config.yaml
-wrap config --defaults # print the packaged defaults
+wrap config             # where config, pricing, the database and the log live
+wrap config --init      # create a commented starter config.yaml
+wrap config --defaults  # print the packaged defaults
+wrap config --effective # print what wrap runs with: the defaults plus your overrides
 ```
 
 For example, to route the large tier to Opus 5.5:

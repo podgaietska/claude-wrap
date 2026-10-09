@@ -1,6 +1,7 @@
 import socket
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from wrap import cli
@@ -86,3 +87,19 @@ def test_config_defaults_prints_the_packaged_config():
 
     assert result.exit_code == 0
     assert result.output.startswith("tiers:")
+
+
+def test_config_effective_merges_overrides(isolated_dirs):
+    config_dir, data_dir = isolated_dirs
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("tiers:\n  large:\n    model: my-model\n")
+
+    result = runner.invoke(cli.app, ["config", "--effective"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith(f"# packaged defaults + {config_dir / 'config.yaml'}\n")
+    settings = yaml.safe_load(result.output)
+    assert settings["tiers"]["large"] == {"model": "my-model"}
+    assert settings["tiers"]["small"]["model"]
+    assert settings["telemetry"]["db_path"] == str(data_dir / "wrap.db")
+    assert "null" not in result.output

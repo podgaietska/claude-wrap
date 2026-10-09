@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 import socket
@@ -14,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import typer
+import yaml
 from rich import box
 from rich.console import Console
 from rich.table import Table
@@ -379,6 +381,9 @@ if __name__ == "__main__":
 def show_config(
     init: bool = typer.Option(False, "--init", help="Create a starter config.yaml in the config directory."),
     defaults: bool = typer.Option(False, "--defaults", help="Print the packaged default config."),
+    effective: bool = typer.Option(
+        False, "--effective", help="Print the config wrap runs with: the defaults with your overrides merged in."
+    ),
 ):
     """Show where wrap reads its config from and writes its data to.
 
@@ -388,6 +393,11 @@ def show_config(
     user_config = user_config_path()
     if defaults:
         typer.echo((paths.DEFAULTS_DIR / user_config.name).read_text(), nl=False)
+        return
+    if effective:
+        sources = "packaged defaults" + (f" + {user_config}" if user_config.exists() else "")
+        settings = _drop_none(dataclasses.asdict(load_config()))
+        typer.echo(f"# {sources}\n" + yaml.safe_dump(settings, sort_keys=False), nl=False)
         return
     if init:
         if user_config.exists():
@@ -410,3 +420,12 @@ def show_config(
     ]
     for label, value in rows:
         typer.echo(f"{label:<9} {value}")
+
+
+def _drop_none(value):
+    """Removes None (unknown) values from nested mappings, as a config file would leave them out."""
+    if isinstance(value, dict):
+        return {k: _drop_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, tuple | list):
+        return [_drop_none(v) for v in value]
+    return value
