@@ -5,7 +5,7 @@ A release is a git tag, `vX.Y.Z`, on a commit on `main`. Pushing the tag runs [`
 1. runs the full CI suite on the tagged commit,
 2. checks the tag is on `main`, matches `version` in `pyproject.toml`, and has a section in `CHANGELOG.md`,
 3. builds the package and smoke-tests a clean install,
-4. publishes it to [PyPI](https://pypi.org/p/claude-wrap) (after you approve the `pypi` deployment, if you set that up),
+4. publishes it to [PyPI](https://pypi.org/p/claude-wrap) after you approve the `pypi` deployment,
 5. creates the [GitHub Release](https://github.com/podgaietska/claude-wrap/releases) with the changelog section as its notes and the built files attached.
 
 If any step fails, nothing after it runs. A failure before step 4 leaves nothing published.
@@ -38,7 +38,7 @@ After 1.0, breaking changes bump MAJOR. To try a release out first, use a pre-re
    git push origin vX.Y.Z
    ```
 
-3. **Watch the Release workflow** in the Actions tab. If the `pypi` environment requires approval, approve the deployment when it asks.
+3. **Watch the Release workflow** in the Actions tab. When it reaches `publish-pypi` it waits for you: click **Review deployments**, tick `pypi` and approve.
 
 4. **Check the result:** the version on https://pypi.org/p/claude-wrap, the release on GitHub, and a fresh install:
 
@@ -71,21 +71,3 @@ It runs CI, builds, and publishes the current version to TestPyPI (skipping it i
 ```bash
 pipx install --force --pip-args="--extra-index-url https://pypi.org/simple/" --index-url https://test.pypi.org/simple/ claude-wrap
 ```
-
-## One-time setup
-
-Publishing uses [Trusted Publishing](https://docs.pypi.org/trusted-publishers/): PyPI trusts this repository's release workflow directly, so there is no API token to store or leak.
-
-1. **Accounts.** Create an account on [pypi.org](https://pypi.org/account/register/) and, separately, on [test.pypi.org](https://test.pypi.org/account/register/), with two-factor authentication on both.
-2. **Pending publishers.** On each site, go to *Your projects → Publishing → Add a new pending publisher → GitHub*, and enter:
-
-   | Field | PyPI | TestPyPI |
-   | --- | --- | --- |
-   | PyPI project name | `claude-wrap` | `claude-wrap` |
-   | Owner | `podgaietska` | `podgaietska` |
-   | Repository name | `claude-wrap` | `claude-wrap` |
-   | Workflow name | `release.yml` | `release.yml` |
-   | Environment name | `pypi` | `testpypi` |
-
-   The project is created on the first upload; until then the name isn't reserved.
-3. **GitHub environments.** In the repository's *Settings → Environments*, create `pypi` and `testpypi`. For `pypi`, optionally add yourself under *Required reviewers*, so every real publish waits for your click.
