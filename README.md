@@ -188,3 +188,7 @@ wrap claude
 ```
 
 Ask a trivial question ("what is 2+2?") and a complex multi-part one ("explain step by step how you'd refactor X, comparing trade-offs..."), and check the proxy's stderr log to confirm they routed to different tiers. Normal Claude Code functionality (tool calls, file edits) should be completely unaffected.
+
+## Releases
+
+Each version is listed in [CHANGELOG.md](CHANGELOG.md) and on the [releases page](https://github.com/podgaietska/claude-wrap/releases). [RELEASING.md](RELEASING.md) describes how a release is made.
