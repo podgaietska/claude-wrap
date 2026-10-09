@@ -1,7 +1,7 @@
 [project]
 name = "claude-wrap"
 version = "0.1.0"
-description = "Cost-aware model routing proxy for Claude Code"
+description = "A model router for Claude Code."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
