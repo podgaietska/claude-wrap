@@ -200,7 +200,11 @@ async def _handle_messages(request: Request, app: FastAPI, req_id: int) -> Respo
         logger.warning(
             "[yellow]#%d %s rejected the request (%s): learned %s, config says %s. "
             "Retrying -- update models in config.yaml.[/yellow]",
-            req_id, model, rule.name, escape(str(updates)), escape(str(configured)),
+            req_id,
+            model,
+            rule.name,
+            escape(str(updates)),
+            escape(str(configured)),
         )
         _adapt(body, model, capabilities, req_id)
         upstream_response, turn.ttfb_ms = await _send(client, url, headers, body, req_id)
@@ -377,7 +381,9 @@ def _error_response(req_id: int, model: str, upstream_response: httpx.Response, 
     """
     logger.warning(
         "[red]#%d upstream %s for %s: %s[/red]",
-        req_id, upstream_response.status_code, model,
+        req_id,
+        upstream_response.status_code,
+        model,
         escape(error_body[:_ERROR_LOG_CHARS].decode(errors="replace")),
     )
     return Response(
@@ -418,7 +424,11 @@ async def _forward_unmodified(
     latency_ms = (time.monotonic() - start) * 1000
     logger.debug(
         "[dim]#%d passthrough %s /%s ← %s in %.0fms[/dim]",
-        req_id, request.method, escape(full_path), upstream_response.status_code, latency_ms,
+        req_id,
+        request.method,
+        escape(full_path),
+        upstream_response.status_code,
+        latency_ms,
     )
     response_headers = filtered_headers(dict(upstream_response.headers))
 

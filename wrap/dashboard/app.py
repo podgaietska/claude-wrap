@@ -62,7 +62,9 @@ def create_dashboard_app(config: Config | None = None) -> FastAPI:
             if conn is None or not db.has_turns(conn):
                 return _empty()
             session_id, all_sessions, count_from, turns = _select(conn, session, since)
-        result = build_stats(turns, pricing, config.routing.complexity_threshold, datetime.now(timezone.utc), count_from)
+        result = build_stats(
+            turns, pricing, config.routing.complexity_threshold, datetime.now(timezone.utc), count_from
+        )
         scope = {
             "session": session_id,
             "all_sessions": all_sessions,

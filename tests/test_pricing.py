@@ -38,7 +38,9 @@ def test_cost_prices_every_token_kind(table):
 
 
 def test_cache_writes_use_the_5m_1h_split(table):
-    usage = Usage(cache_creation_tokens=3_000_000, cache_creation_5m_tokens=1_000_000, cache_creation_1h_tokens=2_000_000)
+    usage = Usage(
+        cache_creation_tokens=3_000_000, cache_creation_5m_tokens=1_000_000, cache_creation_1h_tokens=2_000_000
+    )
 
     assert table.cost("claude-haiku-4-5", usage) == pytest.approx(1.25 + 2 * 2.0)
 

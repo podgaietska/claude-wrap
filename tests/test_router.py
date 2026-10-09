@@ -75,11 +75,13 @@ def test_human_text_skips_injected_system_reminder_blocks():
 
 def test_reminder_only_message_is_not_a_question():
     assert human_text({"role": "user", "content": "<system-reminder>\ncontext"}) is None
-    turn = find_turn([
-        {"role": "user", "content": "the real question"},
-        {"role": "assistant", "content": "answer"},
-        {"role": "user", "content": [{"type": "text", "text": "<system-reminder>\nctx"}]},
-    ])
+    turn = find_turn(
+        [
+            {"role": "user", "content": "the real question"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": [{"type": "text", "text": "<system-reminder>\nctx"}]},
+        ]
+    )
     assert turn.text == "the real question"
 
 

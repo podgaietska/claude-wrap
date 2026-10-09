@@ -36,6 +36,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
+from itertools import pairwise
 
 from wrap.telemetry.db import TurnRecord
 from wrap.telemetry.pricing import PricingTable
@@ -262,11 +263,13 @@ def iter_turn_economics(
     for thread in threads.values():
         uses_1h = any(t.usage.cache_creation_1h_tokens > 0 for t in thread)
         succeeded = [t for t in thread if succeeded_turn(t)]
-        growth = typical_growth([
-            turn.usage.cache_creation_tokens
-            for previous, turn in zip(succeeded, succeeded[1:])
-            if previous.model == turn.model and _within_ttl(previous, turn, uses_1h)
-        ])
+        growth = typical_growth(
+            [
+                turn.usage.cache_creation_tokens
+                for previous, turn in pairwise(succeeded)
+                if previous.model == turn.model and _within_ttl(previous, turn, uses_1h)
+            ]
+        )
 
         previous: TurnRecord | None = None
         for turn in succeeded:

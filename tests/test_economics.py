@@ -11,16 +11,30 @@ OPUS = "claude-opus-5-5"
 HAIKU = "claude-haiku-4-5-20251001"
 PRICING = PricingTable(
     {
-        "claude-opus-5-5": ModelPricing(input=4.0, output=20.0, cache_read=0.20, cache_write_5m=5.0, cache_write_1h=8.0),
-        "claude-haiku-4-5": ModelPricing(input=1.0, output=5.0, cache_read=0.10, cache_write_5m=1.25, cache_write_1h=2.0),
+        "claude-opus-5-5": ModelPricing(
+            input=4.0, output=20.0, cache_read=0.20, cache_write_5m=5.0, cache_write_1h=8.0
+        ),
+        "claude-haiku-4-5": ModelPricing(
+            input=1.0, output=5.0, cache_read=0.10, cache_write_5m=1.25, cache_write_1h=2.0
+        ),
     }
 )
 START = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 
 
-def turn(model: str, cache_read: int, cache_write: int, *, seconds: float = 0, requested: str = OPUS,
-         thread: str = "t1", input_tokens: int = 10, output: int = 500, status: int = 200,
-         write_1h: bool = False) -> TurnRecord:
+def turn(
+    model: str,
+    cache_read: int,
+    cache_write: int,
+    *,
+    seconds: float = 0,
+    requested: str = OPUS,
+    thread: str = "t1",
+    input_tokens: int = 10,
+    output: int = 500,
+    status: int = 200,
+    write_1h: bool = False,
+) -> TurnRecord:
     return TurnRecord(
         timestamp=(START + timedelta(seconds=seconds)).isoformat(),
         session_id="s1",
@@ -188,7 +202,6 @@ def test_no_eligible_turns_gives_no_check_rate():
     assert analyze([turn(OPUS, 0, 1_000)], PRICING).check_rate is None
 
 
-
 def test_switch_does_not_count_another_tokenizers_count_as_new_content():
     # The same conversation is 151k tokens on Haiku but 207k after switching
     # to a model with a different tokenizer, though it only grew ~400 tokens.
@@ -216,8 +229,10 @@ def test_typical_growth_is_the_median_write_of_turns_that_stayed_on_one_model():
 
     result = analyze(turns, PRICING)
 
-    expected = [turn_economics(t, prev, PRICING, uses_1h=False, typical_growth=500)
-                for prev, t in zip([None, *turns], turns)]
+    expected = [
+        turn_economics(t, prev, PRICING, uses_1h=False, typical_growth=500)
+        for prev, t in zip([None, *turns], turns, strict=False)
+    ]
     assert result.counterfactual_cost == pytest.approx(sum(e.counterfactual_cost for e in expected))
     assert result.cache_penalty == pytest.approx(sum(e.cache_penalty for e in expected))
 
