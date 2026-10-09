@@ -21,10 +21,10 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history, to check the tag is on main
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: Check the tag is on main and matches the version and changelog
@@ -37,11 +37,11 @@ jobs:
       - run: python -m build
       - run: twine check --strict dist/*
       - run: scripts/smoke_test.sh dist/*.whl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: github.ref_type == 'tag'
         with:
           name: release-notes
@@ -57,7 +57,7 @@ jobs:
     permissions:
       id-token: write # Trusted Publishing: PyPI trusts this workflow, no API token
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist/
@@ -76,7 +76,7 @@ jobs:
     permissions:
       id-token: write # Trusted Publishing: PyPI trusts this workflow, no API token
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist/
@@ -88,11 +88,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: release-notes
       - run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file release-notes.md
