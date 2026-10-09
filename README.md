@@ -1,6 +1,6 @@
 # prompt-router
 
-A transparent cost-aware model router for [Claude Code](https://claude.com/claude-code). Its CLI, `wrap`, starts a local proxy, points a real Claude Code session at it, and routes each turn to a small/cheap model or a large/capable one based on how complex the question looks — with no change to how you actually use Claude Code.
+A model router for [Claude Code](https://claude.com/claude-code). `wrap claude` runs a real Claude Code session through a local proxy that sends each question to a cheaper or more capable model, depending on how complex it looks. `wrap stats` and a local dashboard show what that saves, including the cache misses that switching models causes.
 
 ## How it works
 
