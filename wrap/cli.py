@@ -6,8 +6,11 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
+import webbrowser
+from urllib.parse import urlencode
 
 import typer
 from rich import box
@@ -114,7 +117,9 @@ def claude(
             f"session: {session_id}\n"
             f"[dim]Logs: {log_path} -- run `wrap logs` in another terminal to follow them live"
             f"{'' if debug else ' (start with --debug for per-request costs)'}. "
-            f"Run `wrap stats` afterwards for this session's costs.[/dim]"
+            f"Run `wrap stats` afterwards for this session's costs.[/dim]\n"
+            f"[dim]Dashboard: run `wrap dashboard` in another terminal "
+            f"(http://{host}:{config.dashboard.port}).[/dim]"
         )
 
         env = os.environ.copy()
@@ -275,10 +280,54 @@ def _print_economics(out: Console, economics: Economics) -> None:
 
 
 @app.command()
-def dashboard():
-    """View cost/latency stats. (Not built yet -- Phase D.)"""
-    console.print("[yellow]wrap dashboard[/yellow] isn't built yet -- coming in a later phase.")
-    raise typer.Exit(1)
+def dashboard(
+    port: int = typer.Option(None, "--port", help="Port to serve on (default: dashboard.port in the config)."),
+    session: str = typer.Option(None, "--session", help="Open on `last`, `all`, or a session ID."),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't open a browser."),
+):
+    """Serve a local dashboard of cost, routing savings and latency.
+
+    Reads the telemetry database read-only, so it can run during a `wrap
+    claude` session (it refreshes live) or after one. Runs until Ctrl-C.
+
+    Raises:
+        typer.Exit: With code 1 if the port is already in use.
+    """
+    import uvicorn
+
+    config = load_config()
+    host = "127.0.0.1"
+    port = port or config.dashboard.port
+    url = f"http://{host}:{port}/" + (f"?{urlencode({'session': session})}" if session else "")
+
+    db_path = REPO_ROOT / config.telemetry.db_path
+    if not db_path.exists():
+        console.print(f"[yellow]No telemetry yet at {db_path} -- the page fills in once `wrap claude` runs.[/yellow]")
+    if _port_in_use(host, port):
+        console.print(f"[red]Port {port} is in use -- is a dashboard already running? Try {url}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]wrap dashboard[/green] on {url} -- Ctrl-C to stop")
+    if not no_open:
+        threading.Thread(target=_open_when_up, args=(host, port, url), daemon=True).start()
+    uvicorn.run(
+        "wrap.dashboard.app:create_dashboard_app", factory=True, host=host, port=port, log_level="warning"
+    )
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    """True if something already accepts connections on the port."""
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _open_when_up(host: str, port: int, url: str) -> None:
+    """Opens the dashboard in a browser once the server accepts connections."""
+    if _wait_for_port(host, port):
+        webbrowser.open(url)
 
 
 if __name__ == "__main__":
