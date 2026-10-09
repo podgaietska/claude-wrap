@@ -9,3 +9,5 @@ data/
 .env
 plan.md
 .DS_Store
+dist/
+build/

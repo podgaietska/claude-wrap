@@ -172,7 +172,14 @@ ruff check .           # lint
 ruff format .          # format
 ```
 
-CI runs the tests on Python 3.10–3.14 (and macOS) plus both ruff checks on every pull request; `main` only accepts PRs that pass.
+To check a built package the way users get it — installed into a clean environment, outside the source tree:
+
+```bash
+python -m build
+scripts/smoke_test.sh dist/*.whl
+```
+
+CI runs the tests on Python 3.10–3.14 (and macOS), both ruff checks, and the package build and smoke test on every pull request; `main` only accepts PRs that pass.
 
 ## Manual verification
 
