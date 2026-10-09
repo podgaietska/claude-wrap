@@ -8,7 +8,6 @@ import subprocess
 import sys
 import time
 import uuid
-from collections import Counter
 
 import typer
 from rich import box
@@ -20,6 +19,7 @@ from wrap.telemetry import db
 from wrap.telemetry.economics import Economics, analyze
 from wrap.telemetry.logger import format_signed_cost, format_tokens
 from wrap.telemetry.pricing import PricingTable
+from wrap.telemetry.requests import count_kinds
 
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
@@ -229,13 +229,7 @@ def print_stats(out: Console, conn: sqlite3.Connection, pricing: PricingTable, s
 
 
 def _breakdown(turns: list[db.TurnRecord]) -> str:
-    """Splits requests into new messages, tool calls and side requests.
-
-    One question in Claude Code is usually several API requests: the
-    question, then a round trip per tool call. A session's main
-    conversation is taken to be the one with the most requests; the rest
-    are side requests (background calls such as session titles, and
-    subagents).
+    """Splits requests into new messages, tool calls and side requests (see `wrap.telemetry.requests`).
 
     Args:
         turns: The requests to describe.
@@ -243,23 +237,8 @@ def _breakdown(turns: list[db.TurnRecord]) -> str:
     Returns:
         E.g. "5 new messages, 8 tool calls, 2 side requests".
     """
-    sizes = Counter((t.session_id, t.thread_key) for t in turns)
-    main_threads = {}
-    for (session_id, thread_key), size in sizes.items():
-        if size > sizes.get((session_id, main_threads.get(session_id)), 0):
-            main_threads[session_id] = thread_key
-
-    tool_calls = new_messages = side = 0
-    for t in turns:
-        if t.thread_key != main_threads[t.session_id]:
-            side += 1
-        elif t.was_tool_continuation:
-            tool_calls += 1
-        elif t.tier in ("small", "large"):
-            new_messages += 1
-        else:
-            side += 1
-    parts = [(new_messages, "new message"), (tool_calls, "tool call"), (side, "side request")]
+    counts = count_kinds(turns)
+    parts = [(counts["new_message"], "new message"), (counts["tool_call"], "tool call"), (counts["side"], "side request")]
     return ", ".join(f"{n} {label}{'' if n == 1 else 's'}" for n, label in parts)
 
 
