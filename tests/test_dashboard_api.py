@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from tests.helpers import START, add_turn
 from tests.test_economics import HAIKU, OPUS
 from wrap.config import load_config
-from wrap.dashboard.app import create_dashboard_app
+from wrap.dashboard.app import STATIC_DIR, create_dashboard_app
 from wrap.telemetry import db
 
 
@@ -106,3 +106,15 @@ def test_requests_newest_first_and_capped(client, seeded):
     assert rows[1]["switched"] is True
     assert client.get("/api/requests", params={"limit": 5000}).status_code == 422
 
+
+def test_page_and_static_files(client):
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "wrap dashboard" in page.text
+    for path in ("/static/dashboard.js", "/static/styles.css", "/static/vendor/chart.umd.js"):
+        assert client.get(path).status_code == 200, path
+
+
+def test_static_files_are_in_the_package():
+    for name in ("index.html", "dashboard.js", "styles.css", "vendor/chart.umd.js", "vendor/chart.js-LICENSE.md"):
+        assert (STATIC_DIR / name).is_file(), name
