@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -136,6 +136,19 @@ class TelemetryConfig:
 
 
 @dataclass
+class DashboardConfig:
+    """Settings for `wrap dashboard`.
+
+    Attributes:
+        port: Port the dashboard listens on (always on 127.0.0.1).
+        refresh_seconds: How often the page refreshes while a session is live.
+    """
+
+    port: int = 8788
+    refresh_seconds: int = 5
+
+
+@dataclass
 class Config:
     """Top-level configuration for the proxy, assembled from `config.yaml`.
 
@@ -149,6 +162,7 @@ class Config:
         cache: Semantic cache settings.
         proxy: Local proxy server settings.
         telemetry: Cost/latency logging settings.
+        dashboard: `wrap dashboard` settings.
     """
 
     tiers: dict[str, TierConfig]
@@ -157,6 +171,7 @@ class Config:
     cache: CacheConfig
     proxy: ProxyConfig
     telemetry: TelemetryConfig
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -173,7 +188,7 @@ def load_config(path: Path | None = None) -> Config:
         FileNotFoundError: If `path` does not exist.
         KeyError: If the YAML is missing one of the required top-level
             sections (`tiers`, `models`, `routing`, `cache`, `proxy`,
-            `telemetry`).
+            `telemetry`). `dashboard` is optional.
     """
     path = path or DEFAULT_CONFIG_PATH
     with open(path) as f:
@@ -188,4 +203,5 @@ def load_config(path: Path | None = None) -> Config:
         cache=CacheConfig(**raw["cache"]),
         proxy=ProxyConfig(**raw["proxy"]),
         telemetry=TelemetryConfig(**raw["telemetry"]),
+        dashboard=DashboardConfig(**(raw.get("dashboard") or {})),
     )
