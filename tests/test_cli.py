@@ -51,3 +51,38 @@ def test_dashboard_refuses_a_busy_port(mocker):
     assert result.exit_code == 1
     assert "is in use" in result.output
     run.assert_not_called()
+
+
+def test_version():
+    result = runner.invoke(cli.app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.output.startswith("claude-wrap ")
+
+
+def test_config_shows_resolved_paths(isolated_dirs):
+    config_dir, data_dir = isolated_dirs
+
+    result = runner.invoke(cli.app, ["config"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Config    {config_dir / 'config.yaml'}  (none" in result.output
+    assert f"Database  {data_dir / 'wrap.db'}" in result.output
+
+
+def test_config_init_writes_a_starter_once(isolated_dirs):
+    config_dir, _ = isolated_dirs
+
+    first = runner.invoke(cli.app, ["config", "--init"])
+    second = runner.invoke(cli.app, ["config", "--init"])
+
+    assert first.exit_code == 0, first.output
+    assert (config_dir / "config.yaml").read_text() == cli.STARTER_CONFIG
+    assert second.exit_code == 1
+
+
+def test_config_defaults_prints_the_packaged_config():
+    result = runner.invoke(cli.app, ["config", "--defaults"])
+
+    assert result.exit_code == 0
+    assert result.output.startswith("tiers:")
