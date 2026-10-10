@@ -67,8 +67,8 @@ def test_config_shows_resolved_paths(isolated_dirs):
     result = runner.invoke(cli.app, ["config"])
 
     assert result.exit_code == 0, result.output
-    assert f"Config    {config_dir / 'config.yaml'}  (none" in result.output
-    assert f"Database  {data_dir / 'wrap.db'}" in result.output
+    assert f"Config       {config_dir / 'config.yaml'}  (none" in result.output
+    assert f"Database     {data_dir / 'wrap.db'}" in result.output
 
 
 def test_config_init_writes_a_starter_once(isolated_dirs):
@@ -103,3 +103,50 @@ def test_config_effective_merges_overrides(isolated_dirs):
     assert settings["tiers"]["small"]["model"]
     assert settings["telemetry"]["db_path"] == str(data_dir / "wrap.db")
     assert "null" not in result.output
+
+
+@pytest.fixture
+def launched(mocker):
+    mocker.patch.object(cli.shutil, "which", return_value="/usr/bin/claude")
+    mocker.patch.object(cli.subprocess, "Popen")
+    mocker.patch.object(cli, "_wait_for_port", return_value=True)
+    return mocker.patch.object(cli.subprocess, "run", return_value=mocker.Mock(returncode=0))
+
+
+@pytest.mark.parametrize(
+    ("args", "passed"),
+    [
+        ([], []),
+        (["-p", "what is 2+2?"], ["-p", "what is 2+2?"]),
+        (["--resume", "--model", "opus"], ["--resume", "--model", "opus"]),
+        (["--debug", "--", "--debug"], ["--debug"]),
+    ],
+)
+def test_claude_passes_extra_arguments_through(launched, args, passed):
+    result = runner.invoke(cli.app, ["claude", *args])
+
+    assert result.exit_code == 0, result.output
+    assert launched.call_args.args[0] == ["claude", *passed]
+
+
+def test_claude_warns_when_claude_code_is_outside_the_tested_range(launched, claude_code_version):
+    claude_code_version["value"] = (9, 0, 0)
+
+    result = runner.invoke(cli.app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    assert "Claude Code 9.0.0 is newer than this claude-wrap is tested with" in result.output
+
+
+def test_claude_is_quiet_inside_the_tested_range(launched):
+    result = runner.invoke(cli.app, ["claude"])
+
+    assert "tested with" not in result.output
+
+
+def test_config_shows_the_claude_code_version(claude_code_version):
+    result = runner.invoke(cli.app, ["config"])
+
+    assert "Claude Code  2.1.100  (tested: >=2.1.0, <2.2.0)" in result.output
+    claude_code_version["value"] = None
+    assert "Claude Code  not found on PATH" in runner.invoke(cli.app, ["config"]).output

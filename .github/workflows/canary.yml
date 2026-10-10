@@ -1,0 +1,77 @@
+name: Canary
+
+# Every week, runs wrap against the oldest Claude Code it's tested with and
+# the latest release (scripts/canary.py), so a Claude Code release that
+# changes how it shapes requests is caught before users report it. A failed
+# scheduled run opens (or comments on) an issue labelled `canary`.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays, 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      claude-code: ${{ steps.versions.outputs.claude-code }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - id: versions
+        run: |
+          oldest=$(PYTHONPATH=. python -c "from wrap.compat import TESTED_FROM; print('.'.join(map(str, TESTED_FROM)))")
+          echo "claude-code=[\"$oldest\", \"latest\"]" >> "$GITHUB_OUTPUT"
+
+  canary:
+    name: canary (Claude Code ${{ matrix.claude-code }})
+    needs: versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        claude-code: ${{ fromJSON(needs.versions.outputs.claude-code) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+      - run: pip install .
+      - run: npm install --global "@anthropic-ai/claude-code@${{ matrix.claude-code }}"
+      - run: python scripts/canary.py --out canary-out
+      - if: always()
+        run: cat canary-out/report.md >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-${{ matrix.claude-code }}
+          path: canary-out/
+
+  report:
+    needs: canary
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - run: |
+          gh label create canary --color FBCA04 --description "Weekly Claude Code compatibility check" --force
+          open=$(gh issue list --label canary --state open --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --label canary --title "Canary: wrap fails against a Claude Code version" \
+              --body "The weekly canary failed: $RUN_URL. Each job's summary shows which checks failed; its artifact holds the requests Claude Code sent and the proxy log."
+          fi
