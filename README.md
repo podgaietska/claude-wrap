@@ -16,13 +16,15 @@ Because `ANTHROPIC_BASE_URL` is only set for the one launched process, there's n
 
 ## Install
 
-Needs Python 3.10+ and [Claude Code](https://claude.com/claude-code) on your `PATH`, on macOS or Linux.
+Needs Python 3.10+ and [Claude Code](https://claude.com/claude-code) on your `PATH`, on macOS or Linux. Install with [pipx](https://pipx.pypa.io/) (`brew install pipx` on macOS):
 
 ```bash
-pipx install git+https://github.com/podgaietska/claude-wrap
+pipx install claude-wrap
 ```
 
-`wrap --version` shows what you have. To work on wrap itself:
+`wrap --version` shows what you have, and `pipx upgrade claude-wrap` gets the latest release. To install a specific version — for example one that matches an older Claude Code — pin it: `pipx install claude-wrap==0.1.0`. Every version is listed in [CHANGELOG.md](CHANGELOG.md).
+
+To work on wrap itself:
 
 ```bash
 git clone https://github.com/podgaietska/claude-wrap && cd claude-wrap
