@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.table import Table
 
 from wrap import __version__, paths
+from wrap.compat import TESTED_RANGE, compatibility_warning, installed_claude_code
 from wrap.config import load_config, user_config_path
 from wrap.telemetry import db
 from wrap.telemetry.economics import Economics, analyze
@@ -116,6 +117,9 @@ def claude(
     if shutil.which("claude") is None:
         console.print("[red]Could not find `claude` on PATH. Install Claude Code first.[/red]")
         raise typer.Exit(1)
+    warning = compatibility_warning(installed_claude_code())
+    if warning:
+        console.print(f"[yellow]{warning}[/yellow]")
 
     config = load_config()
     host = "127.0.0.1"
@@ -417,6 +421,7 @@ def show_config(
     user_pricing = user_pricing_path(config.telemetry)
     rows = [
         ("Version", __version__),
+        ("Claude Code", f"{_claude_code_version()}  (tested: {TESTED_RANGE})"),
         ("Config", f"{user_config}" + ("" if user_config.exists() else "  (none; create with `wrap config --init`)")),
         ("Pricing", f"{user_pricing}" + ("" if user_pricing.exists() else "  (none; packaged prices only)")),
         ("Defaults", str(paths.DEFAULTS_DIR)),
@@ -424,7 +429,7 @@ def show_config(
         ("Log", config.proxy.log_path),
     ]
     for label, value in rows:
-        typer.echo(f"{label:<9} {value}")
+        typer.echo(f"{label:<12} {value}")
 
 
 def _drop_none(value):
@@ -434,3 +439,12 @@ def _drop_none(value):
     if isinstance(value, tuple | list):
         return [_drop_none(v) for v in value]
     return value
+
+
+def _claude_code_version() -> str:
+    """The installed Claude Code version for `wrap config`, with any compatibility warning."""
+    version = installed_claude_code()
+    if version is None:
+        return "not found on PATH"
+    warning = compatibility_warning(version)
+    return ".".join(map(str, version)) + ("  [outside the tested range]" if warning else "")
