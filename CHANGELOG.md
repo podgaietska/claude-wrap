@@ -6,6 +6,8 @@ Add a line under **Unreleased** in any PR that changes what users see. At releas
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-09
+
 ### Added
 
 - `wrap claude` passes other arguments to `claude`, e.g. `wrap claude --resume` or `wrap claude -p "question"`. Put an argument wrap also uses after `--`.
