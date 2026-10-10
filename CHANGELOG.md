@@ -6,6 +6,11 @@ Add a line under **Unreleased** in any PR that changes what users see. At releas
 
 ## Unreleased
 
+### Added
+
+- `wrap claude` passes other arguments to `claude`, e.g. `wrap claude --resume` or `wrap claude -p "question"`. Put an argument wrap also uses after `--`.
+- `wrap claude` warns when the installed Claude Code is outside the versions this release is tested with (2.1.0 up to 2.2); `wrap config` shows the installed version and the range.
+
 ## 0.1.0 - 2026-10-09
 
 First release.

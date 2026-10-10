@@ -33,6 +33,20 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+## Claude Code compatibility
+
+Each claude-wrap release is tested with a range of Claude Code versions. `wrap config` shows your Claude Code version and the range, and `wrap claude` warns when you're outside it. If you need an older Claude Code, install the claude-wrap release that supports it (`pipx install claude-wrap==X.Y.Z`).
+
+| claude-wrap | Tested with Claude Code |
+| --- | --- |
+| 0.1.x and later | 2.1.0 to 2.1.x |
+
+A [weekly check](.github/workflows/canary.yml) runs the oldest version in the range and the latest Claude Code release through wrap, against a fake Anthropic API, and opens an issue if routing breaks. To run it yourself against the `claude` on your `PATH`:
+
+```bash
+python scripts/canary.py
+```
+
 ## Usage
 
 ```bash
@@ -40,6 +54,8 @@ wrap claude
 ```
 
 This starts the proxy on `127.0.0.1:8787` (configurable, see [Configuration](#configuration)) and launches Claude Code through it. The banner prints a session ID.
+
+Other arguments go to `claude`, so `wrap claude --resume` or `wrap claude -p "question"` work as they would without wrap. To pass an argument wrap also uses, put it after `--`: `wrap claude -- --debug` turns on Claude Code's debug mode instead of wrap's.
 
 ```bash
 wrap logs                  # in another terminal: follow routing decisions live
