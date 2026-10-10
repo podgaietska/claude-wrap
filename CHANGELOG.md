@@ -6,6 +6,8 @@ Add a line under **Unreleased** in any PR that changes what users see. At releas
 
 ## Unreleased
 
+## 0.1.0 - 2026-10-09
+
 First release.
 
 ### Added
