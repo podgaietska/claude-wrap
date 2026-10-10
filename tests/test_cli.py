@@ -103,3 +103,27 @@ def test_config_effective_merges_overrides(isolated_dirs):
     assert settings["tiers"]["small"]["model"]
     assert settings["telemetry"]["db_path"] == str(data_dir / "wrap.db")
     assert "null" not in result.output
+
+
+@pytest.fixture
+def launched(mocker):
+    mocker.patch.object(cli.shutil, "which", return_value="/usr/bin/claude")
+    mocker.patch.object(cli.subprocess, "Popen")
+    mocker.patch.object(cli, "_wait_for_port", return_value=True)
+    return mocker.patch.object(cli.subprocess, "run", return_value=mocker.Mock(returncode=0))
+
+
+@pytest.mark.parametrize(
+    ("args", "passed"),
+    [
+        ([], []),
+        (["-p", "what is 2+2?"], ["-p", "what is 2+2?"]),
+        (["--resume", "--model", "opus"], ["--resume", "--model", "opus"]),
+        (["--debug", "--", "--debug"], ["--debug"]),
+    ],
+)
+def test_claude_passes_extra_arguments_through(launched, args, passed):
+    result = runner.invoke(cli.app, ["claude", *args])
+
+    assert result.exit_code == 0, result.output
+    assert launched.call_args.args[0] == ["claude", *passed]

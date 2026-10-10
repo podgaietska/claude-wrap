@@ -90,11 +90,16 @@ def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
     return False
 
 
-@app.command()
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def claude(
+    ctx: typer.Context,
     debug: bool = typer.Option(False, "--debug", help="Log each request's details, tokens, cost and latency."),
 ):
     """Launch Claude Code with routing-aware proxying turned on.
+
+    Any other arguments are passed to `claude`, e.g. `wrap claude --resume`
+    or `wrap claude -p "question"`; put them after `--` to pass one wrap
+    also uses, e.g. `wrap claude -- --debug`.
 
     Runs the real `claude` CLI as a child process with stdio inherited,
     so the user gets a normal, fully interactive session. The proxy's own
@@ -162,7 +167,7 @@ def claude(
         env = os.environ.copy()
         env["ANTHROPIC_BASE_URL"] = f"http://{host}:{config.proxy.port}"
 
-        result = subprocess.run(["claude"], env=env)
+        result = subprocess.run(["claude", *ctx.args], env=env)
         raise typer.Exit(result.returncode)
     finally:
         proxy_proc.terminate()
