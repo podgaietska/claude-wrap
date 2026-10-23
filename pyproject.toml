@@ -36,7 +36,7 @@ dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
     "respx>=0.21",
-    "ruff==0.17.0",
+    "ruff==0.17.1",
 ]
 
 [project.urls]
